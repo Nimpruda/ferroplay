@@ -1,0 +1,75 @@
+use hls::playlist::{is_playlist, join, media, rewrite, segments, variants};
+
+const MASTER: &str = "#EXTM3U
+#EXT-X-STREAM-INF:PROGRAM-ID=1,AVERAGE-BANDWIDTH=900,BANDWIDTH=2149280,CODECS=\"mp4a.40.2,avc1.64001f\",RESOLUTION=1280x720
+url_0/hd.m3u8
+#EXT-X-STREAM-INF:BANDWIDTH=246440,CODECS=\"mp4a.40.5,avc1.42000d\"
+/abs/ld.m3u8
+";
+
+#[test]
+fn master_playlist() {
+    let v = variants(MASTER, "https://cdn.test/x/master.m3u8?token=a/b");
+    assert_eq!(v.len(), 2);
+    assert_eq!((v[0].bandwidth, v[0].uri.as_str()), (2149280, "https://cdn.test/x/url_0/hd.m3u8"));
+    assert_eq!((v[1].bandwidth, v[1].uri.as_str()), (246440, "https://cdn.test/abs/ld.m3u8"));
+}
+
+#[test]
+fn media_playlist() {
+    let text = "#EXTM3U\n#EXT-X-TARGETDURATION:11\n#EXTINF:10.000,\na.ts\n#EXTINF:9.5,title\nhttp://o.test/b.ts\n#EXT-X-ENDLIST\n";
+    let s = segments(text, "https://cdn.test/v/index.m3u8");
+    assert_eq!(s.len(), 2);
+    assert_eq!((s[0].start, s[0].duration, s[0].uri.as_str()), (0.0, 10.0, "https://cdn.test/v/a.ts"));
+    assert_eq!((s[1].start, s[1].duration, s[1].uri.as_str()), (10.0, 9.5, "http://o.test/b.ts"));
+    assert!(variants(text, "").is_empty());
+}
+
+#[test]
+fn live_playlist_has_no_endlist() {
+    let text = "#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXT-X-MEDIA-SEQUENCE:100\n#EXTINF:6.0,\na.ts\n#EXTINF:5.5,\nb.ts\n";
+    let m = media(text, "https://cdn.test/v/index.m3u8");
+    assert!(m.live() && !m.ended);
+    assert_eq!((m.target_duration, m.media_sequence), (6.0, 100));
+    let seq: Vec<u64> = m.segments.iter().map(|s| s.sequence).collect();
+    assert_eq!(seq, [100, 101]);
+    assert_eq!(m.segments[1].start, 6.0);
+}
+
+#[test]
+fn endlist_ends_an_event_playlist_and_keeps_its_segments() {
+    let head = "#EXTM3U\n#EXT-X-PLAYLIST-TYPE:EVENT\n#EXT-X-TARGETDURATION:4\n#EXT-X-MEDIA-SEQUENCE:0\n";
+    let first = media(&(head.to_string() + "#EXTINF:4.0,\na.ts\n"), "https://cdn.test/v/index.m3u8");
+    assert!(first.live());
+    let second = media(&(head.to_string() + "#EXTINF:4.0,\na.ts\n#EXTINF:3.0,\nb.ts\n#EXT-X-ENDLIST\n"), "https://cdn.test/v/index.m3u8");
+    assert!(!second.live() && second.ended);
+    // Same first segment on both reloads: the sequence number is what links them.
+    assert_eq!((first.segments[0].sequence, second.segments[0].sequence), (0, 0));
+    assert_eq!(second.segments[1].sequence, 1);
+    assert_eq!(second.segments[0].uri, first.segments[0].uri);
+}
+
+#[test]
+fn joins_every_kind_of_uri() {
+    let base = "https://cdn.test/a/b/index.m3u8?t=1";
+    assert_eq!(join(base, "seg.ts"), "https://cdn.test/a/b/seg.ts");
+    assert_eq!(join(base, "seg.ts?next=http://x.test/"), "https://cdn.test/a/b/seg.ts?next=http://x.test/");
+    assert_eq!(join(base, "/root.ts"), "https://cdn.test/root.ts");
+    assert_eq!(join(base, "//other.test/x.ts"), "https://other.test/x.ts");
+    assert_eq!(join(base, "http://other.test/x.ts"), "http://other.test/x.ts");
+    // Paths of our own proxy contain a URL: still a path.
+    assert_eq!(join("http://127.0.0.1:8080/proxy/https://cdn.test/a.m3u8", "/proxy/https://cdn.test/b.ts"), "http://127.0.0.1:8080/proxy/https://cdn.test/b.ts");
+}
+
+#[test]
+fn rewrites_uri_lines_and_attributes() {
+    let text = "#EXTM3U\n#EXT-X-MAP:URI=\"init.mp4\",BYTERANGE=\"1@0\"\n#EXTINF:4,\nseg.ts\n";
+    let out = rewrite(text, "https://cdn.test/v/index.m3u8", |uri| format!("/proxy/{uri}"));
+    assert_eq!(out, "#EXTM3U\n#EXT-X-MAP:URI=\"/proxy/https://cdn.test/v/init.mp4\",BYTERANGE=\"1@0\"\n#EXTINF:4,\n/proxy/https://cdn.test/v/seg.ts\n");
+}
+
+#[test]
+fn recognizes_playlists() {
+    assert!(is_playlist("https://cdn.test/live.M3U8?token=1"));
+    assert!(!is_playlist("https://cdn.test/movie.mp4?x=.m3u8"));
+}

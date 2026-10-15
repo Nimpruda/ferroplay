@@ -1,0 +1,19 @@
+[workspace]
+members = ["crates/*"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+
+[workspace.dependencies]
+player = { path = "crates/player" }
+ts2mp4 = { path = "crates/ts2mp4" }
+hls = { path = "crates/hls" }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

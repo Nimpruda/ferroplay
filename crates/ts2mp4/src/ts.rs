@@ -1,0 +1,339 @@
+//! MPEG-TS demuxer for the usual HLS payload: H.264 video and AAC (ADTS) audio.
+
+use alloc::{string::String, vec::Vec};
+
+/// One segment's media. Timestamps are in 90 kHz units.
+pub struct Media {
+    pub video: Option<Video>,
+    pub audio: Option<Audio>,
+}
+
+pub struct Video {
+    pub sps: Vec<u8>,
+    pub pps: Vec<u8>,
+    pub width: u32,
+    pub height: u32,
+    pub samples: Vec<Sample>,
+}
+
+pub struct Audio {
+    /// AudioSpecificConfig: object type, sample rate index, channels.
+    pub config: [u8; 2],
+    pub rate: u32,
+    pub channels: u8,
+    pub samples: Vec<Sample>,
+}
+
+pub struct Sample {
+    pub pts: i64,
+    pub dts: i64,
+    pub key: bool,
+    /// Video: length-prefixed NAL units. Audio: one raw AAC frame.
+    pub data: Vec<u8>,
+}
+
+impl Media {
+    /// The earliest timestamp.
+    pub fn start(&self) -> Option<i64> {
+        let video = self.video.as_ref().map(|v| v.samples[0].dts);
+        let audio = self.audio.as_ref().map(|a| a.samples[0].pts);
+        video.into_iter().chain(audio).min()
+    }
+
+    /// MIME type for Media Source, e.g. `video/mp4; codecs="avc1.64001f,mp4a.40.2"`.
+    pub fn mime(&self) -> String {
+        let mut codecs = Vec::new();
+        if let Some(v) = &self.video {
+            let mut c = String::from("avc1.");
+            for &b in &v.sps[1..4] {
+                for n in [b >> 4, b & 15] {
+                    c.push(char::from(b"0123456789abcdef"[usize::from(n)]));
+                }
+            }
+            codecs.push(c);
+        }
+        if let Some(a) = &self.audio {
+            let object = a.config[0] >> 3;
+            let mut c = String::from("mp4a.40.");
+            if object >= 10 {
+                c.push(char::from(b'0' + object / 10));
+            }
+            c.push(char::from(b'0' + object % 10));
+            codecs.push(c);
+        }
+        let kind = if self.video.is_some() { "video" } else { "audio" };
+        [kind, "/mp4; codecs=\"", &codecs.join(","), "\""].concat()
+    }
+}
+
+pub fn demux(ts: &[u8]) -> Media {
+    let (video_pes, audio_pes) = split(ts);
+    Media { video: video(&video_pes), audio: audio(&audio_pes) }
+}
+
+/// TS packets -> the PES packets of the first H.264 and the first AAC stream.
+fn split(ts: &[u8]) -> (Vec<Vec<u8>>, Vec<Vec<u8>>) {
+    let (mut pmt, mut pids) = (None, (None, None));
+    let (mut video, mut audio) = (Vec::new(), Vec::new());
+    for p in ts.chunks_exact(188).filter(|p| p[0] == 0x47) {
+        let pid = u16::from_be_bytes([p[1] & 0x1f, p[2]]);
+        let start = p[1] & 0x40 != 0;
+        let skip = if p[3] & 0x20 != 0 { 5 + usize::from(p[4]) } else { 4 }; // adaptation field
+        let Some(payload) = p.get(skip..).filter(|_| p[3] & 0x10 != 0) else { continue };
+        if pid == 0 && start {
+            pmt = pat(payload).or(pmt);
+        } else if Some(pid) == pmt && start {
+            pids = streams(payload).unwrap_or(pids);
+        } else if let Some(list) = match pid {
+            _ if Some(pid) == pids.0 => Some(&mut video),
+            _ if Some(pid) == pids.1 => Some(&mut audio),
+            _ => None,
+        } {
+            if start {
+                list.push(Vec::new());
+            }
+            if let Some(pes) = list.last_mut() {
+                pes.extend_from_slice(payload);
+            }
+        }
+    }
+    (video, audio)
+}
+
+/// A PSI section (PAT or PMT) from table_id up to, not including, its CRC.
+fn section(payload: &[u8]) -> Option<&[u8]> {
+    let s = payload.get(1 + usize::from(*payload.first()?)..)?;
+    let len = usize::from(*s.get(1)? & 0x0f) << 8 | usize::from(*s.get(2)?);
+    s.get(..(3 + len).checked_sub(4)?)
+}
+
+/// PAT -> PID of the first program's PMT.
+fn pat(payload: &[u8]) -> Option<u16> {
+    let programs = section(payload)?.get(8..)?.chunks_exact(4);
+    programs.into_iter().find(|e| e[..2] != [0, 0]).map(|e| u16::from_be_bytes([e[2] & 0x1f, e[3]]))
+}
+
+/// PMT -> PIDs of the H.264 (type 0x1b) and AAC (type 0x0f) streams.
+fn streams(payload: &[u8]) -> Option<(Option<u16>, Option<u16>)> {
+    let s = section(payload)?;
+    let mut i = 12 + (usize::from(*s.get(10)? & 0x0f) << 8 | usize::from(*s.get(11)?));
+    let (mut video, mut audio) = (None, None);
+    while let Some(e) = s.get(i..i + 5) {
+        let pid = Some(u16::from_be_bytes([e[1] & 0x1f, e[2]]));
+        match e[0] {
+            0x1b => video = video.or(pid),
+            0x0f => audio = audio.or(pid),
+            _ => {}
+        }
+        i += 5 + (usize::from(e[3] & 0x0f) << 8 | usize::from(e[4]));
+    }
+    Some((video, audio))
+}
+
+/// PES packet -> (pts, dts) when present, and the payload.
+fn pes(data: &[u8]) -> Option<(Option<(i64, i64)>, &[u8])> {
+    if data.get(..3)? != [0, 0, 1] {
+        return None;
+    }
+    let flags = *data.get(7)? >> 6;
+    let payload = data.get(9 + usize::from(*data.get(8)?)..)?;
+    let pts = if flags & 2 != 0 { Some(timestamp(data.get(9..14)?)) } else { None };
+    let dts = if flags == 3 { Some(timestamp(data.get(14..19)?)) } else { pts };
+    Some((pts.zip(dts), payload))
+}
+
+fn timestamp(b: &[u8]) -> i64 {
+    i64::from((b[0] >> 1) & 7) << 30
+        | i64::from(b[1]) << 22
+        | i64::from(b[2] >> 1) << 15
+        | i64::from(b[3]) << 7
+        | i64::from(b[4] >> 1)
+}
+
+/// PES packets -> video frames, one per PES (the norm in HLS).
+fn video(list: &[Vec<u8>]) -> Option<Video> {
+    let (mut sps, mut pps, mut samples) = (Vec::new(), Vec::new(), Vec::<Sample>::new());
+    for data in list {
+        let Some((times, payload)) = pes(data) else { continue };
+        let (mut key, mut frame) = (false, Vec::new());
+        for nal in nal_units(payload) {
+            match nal[0] & 0x1f {
+                7 if sps.is_empty() => sps = nal.to_vec(),
+                8 if pps.is_empty() => pps = nal.to_vec(),
+                7..=9 => {} // parameter sets go in the init segment; drop access unit delimiters
+                kind => {
+                    key |= kind == 5;
+                    frame.extend((nal.len() as u32).to_be_bytes());
+                    frame.extend_from_slice(nal);
+                }
+            }
+        }
+        match (times, samples.last_mut()) {
+            (Some((pts, dts)), _) => samples.push(Sample { pts, dts, key, data: frame }),
+            (None, Some(last)) => last.data.extend(frame), // a frame split over two PES
+            (None, None) => {}
+        }
+    }
+    if sps.len() < 4 || pps.is_empty() || samples.is_empty() {
+        return None;
+    }
+    let (width, height) = picture_size(&sps);
+    Some(Video { sps, pps, width, height, samples })
+}
+
+/// Splits an Annex B byte stream on its `00 00 01` start codes.
+fn nal_units(data: &[u8]) -> impl Iterator<Item = &[u8]> {
+    let starts: Vec<usize> = data.windows(3).enumerate().filter(|(_, w)| *w == [0, 0, 1]).map(|(i, _)| i + 3).collect();
+    (0..starts.len()).filter_map(move |k| {
+        let end = starts.get(k + 1).map_or(data.len(), |next| next - 3);
+        let nal = data.get(starts[k]..end)?;
+        let len = nal.iter().rposition(|&b| b != 0)? + 1; // trailing zeros belong to the next start code
+        Some(&nal[..len])
+    })
+}
+
+const RATES: [u32; 13] = [96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350];
+
+/// PES packets -> AAC frames, timed from the first PTS (frames may straddle PES packets).
+fn audio(list: &[Vec<u8>]) -> Option<Audio> {
+    let (mut stream, mut start) = (Vec::new(), None);
+    for (times, payload) in list.iter().filter_map(|data| pes(data)) {
+        start = start.or(times.map(|(pts, _)| pts));
+        stream.extend_from_slice(payload);
+    }
+    let start = start?;
+    let (mut i, mut audio) = (0, None);
+    while let Some(h) = stream.get(i..i + 7) {
+        if h[0] != 0xff || h[1] & 0xf0 != 0xf0 {
+            i += 1; // resync on the next ADTS header
+            continue;
+        }
+        let len = usize::from(h[3] & 3) << 11 | usize::from(h[4]) << 3 | usize::from(h[5] >> 5);
+        let header = if h[1] & 1 == 1 { 7 } else { 9 };
+        let Some(frame) = stream.get(i + header..i + len) else { break };
+        let (object, freq, channels) = ((h[2] >> 6) + 1, (h[2] >> 2) & 15, (h[2] & 1) << 2 | h[3] >> 6);
+        let rate = *RATES.get(usize::from(freq))?;
+        let a = audio.get_or_insert_with(|| Audio {
+            config: [object << 3 | freq >> 1, (freq & 1) << 7 | channels << 3],
+            rate,
+            channels,
+            samples: Vec::new(),
+        });
+        let pts = start + a.samples.len() as i64 * 1024 * 90_000 / i64::from(a.rate);
+        a.samples.push(Sample { pts, dts: pts, key: true, data: frame.to_vec() });
+        i += len;
+    }
+    audio
+}
+
+/// Picture size from an H.264 sequence parameter set (ITU-T H.264, 7.3.2.1.1).
+fn picture_size(sps: &[u8]) -> (u32, u32) {
+    // Drop emulation prevention bytes: 00 00 03 -> 00 00.
+    let (mut rbsp, mut zeros) = (Vec::new(), 0);
+    for &b in &sps[1..] {
+        if zeros == 2 && b == 3 {
+            zeros = 0;
+            continue;
+        }
+        zeros = if b == 0 { zeros + 1 } else { 0 };
+        rbsp.push(b);
+    }
+    let mut r = Bits { data: &rbsp, pos: 0 };
+    let profile = r.bits(8);
+    r.bits(16); // constraint flags, level
+    r.ue(); // seq_parameter_set_id
+    let mut chroma = 1;
+    if matches!(profile, 100 | 110 | 122 | 244 | 44 | 83 | 86 | 118 | 128 | 138 | 139 | 134 | 135) {
+        chroma = r.ue();
+        if chroma == 3 {
+            r.bits(1); // separate_colour_plane_flag
+        }
+        r.ue(); // bit_depth_luma_minus8
+        r.ue(); // bit_depth_chroma_minus8
+        r.bits(1); // qpprime_y_zero_transform_bypass_flag
+        if r.bits(1) == 1 {
+            for i in 0..if chroma == 3 { 12 } else { 8 } {
+                if r.bits(1) == 1 {
+                    r.skip_scaling_list(if i < 6 { 16 } else { 64 });
+                }
+            }
+        }
+    }
+    r.ue(); // log2_max_frame_num_minus4
+    match r.ue() {
+        0 => {
+            r.ue(); // log2_max_pic_order_cnt_lsb_minus4
+        }
+        1 => {
+            r.bits(1);
+            r.se();
+            r.se();
+            for _ in 0..r.ue().min(255) {
+                r.se();
+            }
+        }
+        _ => {}
+    }
+    r.ue(); // max_num_ref_frames
+    r.bits(1); // gaps_in_frame_num_value_allowed_flag
+    let (w, h) = (r.ue() + 1, r.ue() + 1); // in macroblocks / map units
+    let frame_mbs_only = r.bits(1);
+    if frame_mbs_only == 0 {
+        r.bits(1); // mb_adaptive_frame_field_flag
+    }
+    r.bits(1); // direct_8x8_inference_flag
+    let crop = if r.bits(1) == 1 { [r.ue(), r.ue(), r.ue(), r.ue()] } else { [0; 4] };
+    let field = 2 - frame_mbs_only;
+    let (crop_x, crop_y) = match chroma {
+        0 => (1, field),
+        1 => (2, 2 * field),
+        2 => (2, field),
+        _ => (1, field),
+    };
+    let width = w.saturating_mul(16).saturating_sub((crop[0] + crop[1]).saturating_mul(crop_x));
+    let height = (field * h).saturating_mul(16).saturating_sub((crop[2] + crop[3]).saturating_mul(crop_y));
+    (width, height)
+}
+
+/// Big-endian bit reader; reads past the end yield zeros.
+struct Bits<'a> {
+    data: &'a [u8],
+    pos: usize,
+}
+
+impl Bits<'_> {
+    fn bits(&mut self, n: u32) -> u32 {
+        (0..n).fold(0, |v, _| {
+            let bit = self.data.get(self.pos / 8).map_or(0, |b| b >> (7 - self.pos % 8) & 1);
+            self.pos += 1;
+            v << 1 | u32::from(bit)
+        })
+    }
+
+    /// Unsigned Exp-Golomb.
+    fn ue(&mut self) -> u32 {
+        let mut zeros = 0;
+        while self.bits(1) == 0 && zeros < 31 {
+            zeros += 1;
+        }
+        ((1u64 << zeros) - 1 + u64::from(self.bits(zeros))) as u32
+    }
+
+    /// Signed Exp-Golomb.
+    fn se(&mut self) -> i64 {
+        let k = i64::from(self.ue());
+        if k % 2 == 1 { (k + 1) / 2 } else { -k / 2 }
+    }
+
+    fn skip_scaling_list(&mut self, size: usize) {
+        let (mut last, mut next) = (8, 8);
+        for _ in 0..size {
+            if next != 0 {
+                next = (last + self.se()).rem_euclid(256);
+            }
+            if next != 0 {
+                last = next;
+            }
+        }
+    }
+}

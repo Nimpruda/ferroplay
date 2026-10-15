@@ -1,0 +1,73 @@
+.vp {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+  background: #000;
+  color: #fff;
+  font: 13px/1 system-ui, sans-serif;
+  outline: none;
+}
+.vp video { display: block; width: 100%; height: 100%; }
+.vp:focus-visible { box-shadow: 0 0 0 2px #4af; }
+
+.vp-bar {
+  position: absolute;
+  inset: auto 0 0 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 24px 12px 10px;
+  background: linear-gradient(transparent, rgb(0 0 0 / .75));
+  transition: opacity .25s;
+}
+/* Idle while playing: hide controls and cursor, unless a control has keyboard focus. */
+.vp-playing:not(.vp-active, :has(:focus-visible)) { cursor: none; }
+.vp-playing:not(.vp-active, :has(:focus-visible)) .vp-bar { opacity: 0; }
+
+.vp button {
+  all: unset;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  cursor: pointer;
+}
+.vp button:focus-visible { outline: 2px solid #4af; border-radius: 4px; }
+.vp svg { width: 22px; height: 22px; fill: currentColor; }
+.vp-playing .vp-i-play, .vp:not(.vp-playing) .vp-i-pause,
+.vp-muted .vp-i-vol, .vp:not(.vp-muted) .vp-i-mute { display: none; }
+
+.vp input[type=range] {
+  appearance: none;
+  flex: 1;
+  min-width: 0;
+  height: 4px;
+  margin: 0;
+  border-radius: 2px;
+  cursor: pointer;
+  background: linear-gradient(90deg,
+    #fff calc(var(--pos, 0) * 100%),
+    rgb(255 255 255 / .45) 0 calc(var(--buf, 0) * 100%),
+    rgb(255 255 255 / .2) 0);
+}
+.vp .vp-vol { flex: 0 0 72px; }
+.vp input::-webkit-slider-thumb { appearance: none; width: 12px; height: 12px; border-radius: 50%; background: #fff; }
+.vp input::-moz-range-thumb { width: 12px; height: 12px; border: 0; border-radius: 50%; background: #fff; }
+.vp input::-moz-range-track { background: transparent; }
+
+.vp-time { white-space: nowrap; font-variant-numeric: tabular-nums; }
+
+.vp-waiting::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 36px;
+  height: 36px;
+  margin: -21px;
+  border: 3px solid rgb(255 255 255 / .25);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: vp-spin .8s linear infinite;
+}
+@keyframes vp-spin { to { transform: rotate(1turn); } }

@@ -1,0 +1,5 @@
+[package]
+name = "player"
+description = "Video player core: state, plugins, what to paint. No I/O, no dependencies."
+version.workspace = true
+edition.workspace = true

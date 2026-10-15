@@ -1,0 +1,15 @@
+[package]
+name = "player-wasm"
+description = "The browser build: the player and its plugins behind the interface web/player.js uses."
+version.workspace = true
+edition.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+player.workspace = true
+hls.workspace = true
+
+[target.wasm32-unknown-unknown.dependencies]
+dlmalloc = { version = "0.2.14", features = ["global"] }

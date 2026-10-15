@@ -1,0 +1,5 @@
+[package]
+name = "ts2mp4"
+description = "MPEG-TS (H.264 + AAC) to fragmented MP4. No dependencies."
+version.workspace = true
+edition.workspace = true

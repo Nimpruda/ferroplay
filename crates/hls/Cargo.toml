@@ -1,0 +1,9 @@
+[package]
+name = "hls"
+description = "HLS playback as a player plugin, plus M3U8 playlist helpers."
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+player.workspace = true
+ts2mp4.workspace = true

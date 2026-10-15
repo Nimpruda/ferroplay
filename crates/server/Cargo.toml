@@ -1,0 +1,12 @@
+[package]
+name = "server"
+description = "Serves web/, plus a proxy so any video link plays in the page."
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+hls.workspace = true
+axum = "0.8.9"
+tokio = { version = "1.53.3", features = ["rt-multi-thread", "macros", "net"] }
+tower-http = { version = "0.7.1", features = ["fs"] }
+reqwest = "0.13.5"
