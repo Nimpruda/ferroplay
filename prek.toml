@@ -10,7 +10,11 @@ hooks = [
   # its .ts extension, so the two hooks that rewrite files would corrupt it.
   { id = "trailing-whitespace", exclude = "^fixtures/" },
   { id = "end-of-file-fixer", exclude = "^fixtures/" },
+  { id = "mixed-line-ending", exclude = "^fixtures/" },
   { id = "check-toml" },
+  { id = "check-yaml" },
+  { id = "check-executables-have-shebangs" },
+  { id = "check-shebang-scripts-are-executable" },
   { id = "check-merge-conflict" },
   { id = "check-added-large-files" },
   { id = "detect-private-key" },
@@ -36,6 +40,24 @@ language = "system"
 entry = "cargo check --all-targets"
 types = ["rust"]
 pass_filenames = false
+
+# Shell and Python (the e2e suite). No ruff format: like cargo fmt, it would rewrite the long lines.
+[[repos]]
+repo = "local"
+
+[[repos.hooks]]
+id = "shellcheck"
+name = "shellcheck"
+language = "system"
+entry = "shellcheck"
+types = ["shell"]
+
+[[repos.hooks]]
+id = "ruff"
+name = "ruff check"
+language = "system"
+entry = "ruff check"
+types = ["python"]
 
 # Docker. hadolint uses the binary on PATH; .hadolint.yaml says which rules are off and why.
 [[repos]]
