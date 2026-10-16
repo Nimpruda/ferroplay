@@ -4,8 +4,17 @@ Chrome. Python stdlib only.
 
     ./build.sh && python3 e2e/run.py
 """
-import glob, os, shutil, signal, subprocess, sys, time, urllib.request
+import glob
+import os
+import shutil
+import signal
+import subprocess
+import sys
+import time
+import urllib.request
+from pathlib import Path
 from urllib.parse import quote
+
 from browser import Chrome, Firefox, free_port
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -67,11 +76,11 @@ def converter():
     tool = os.path.join(ROOT, 'target/debug/ts2mp4')
     segments = sorted(glob.glob(os.path.join(ROOT, 'web/hls/[0-9]*p/*.ts')))  # the VOD qualities, not a live folder
     bad = []
-    for path in segments:
+    for path in segments:  # check=False: a failing segment lands in bad instead of stopping the run
         with open(path, 'rb') as ts:
-            mp4 = subprocess.run([tool], stdin=ts, capture_output=True).stdout
+            mp4 = subprocess.run([tool], stdin=ts, capture_output=True, check=False).stdout
         decode = subprocess.run(['ffmpeg', '-v', 'error', '-f', 'mp4', '-i', 'pipe:', '-f', 'null', '-'],
-                                input=mp4, capture_output=True)
+                                input=mp4, capture_output=True, check=False)
         if not mp4 or decode.returncode or decode.stderr:
             bad.append(os.path.relpath(path, ROOT))
     check('converter: every segment decodes', segments and not bad, f'{len(segments)} segments' + (f', bad: {bad}' if bad else ''))
@@ -145,9 +154,9 @@ def live(url):
                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     browsers = []
     try:
-        playlist = os.path.join(live_dir, 'live.m3u8')
+        playlist = Path(live_dir, 'live.m3u8')
         # A full window (6 segments of 4 s), so the start is a real hold-back (3 × 4 s from the end), not 0.
-        ready = wait_for(lambda: os.path.exists(playlist) and open(playlist).read().count('#EXTINF') >= 6, 45, 0.5)
+        ready = wait_for(lambda: playlist.exists() and playlist.read_text().count('#EXTINF') >= 6, 45, 0.5)
         check('live: the stream writes a full window', ready)
         if not ready:
             return
@@ -183,12 +192,12 @@ def live(url):
         until(c, f"{V}.currentTime > 2", 20)
         time.sleep(12)
         ranges = c.js('window.liveRanges')
-        ok = bool(ranges) and all(0 <= start <= end and end < 1e9 for start, end in ranges) and ranges[-1][1] > ranges[0][1]
+        ok = bool(ranges) and all(0 <= start <= end < 1e9 for start, end in ranges) and ranges[-1][1] > ranges[0][1]
         check('live: the window reaches the MediaSource, and it moves', ok, f'{len(ranges)} calls, first {ranges[:1]}, last {ranges[-1:]}')
 
         stream.send_signal(signal.SIGINT)  # the playlist gets ENDLIST: a finished stream
         stream.wait(timeout=30)
-        check('live: stopping the stream ends the playlist', 'EXT-X-ENDLIST' in open(playlist).read())
+        check('live: stopping the stream ends the playlist', 'EXT-X-ENDLIST' in playlist.read_text())
         ended = until(b, f"{V}.ended", 60)
         check('live: plays to the end once the stream has ended', ended and not state(b)['error'], state(b))
     finally:

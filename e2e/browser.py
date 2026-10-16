@@ -1,6 +1,16 @@
 """Tiny stdlib drivers for headless Chrome (DevTools protocol) and Firefox (Marionette).
 Both offer: open(url), js(expr) -> value (promises awaited), key(k), close()."""
-import base64, json, os, shutil, socket, struct, subprocess, tempfile, time, urllib.request
+import base64
+import contextlib
+import json
+import os
+import shutil
+import socket
+import struct
+import subprocess
+import tempfile
+import time
+import urllib.request
 
 
 def free_port():
@@ -9,9 +19,10 @@ def free_port():
         return s.getsockname()[1]
 
 
-class Chrome:
-    KEYS = {'ArrowRight': 39, 'ArrowLeft': 37, 'ArrowUp': 38, 'ArrowDown': 40, ' ': 32}
+KEY_CODES = {'ArrowRight': 39, 'ArrowLeft': 37, 'ArrowUp': 38, 'ArrowDown': 40, ' ': 32}  # Chrome's windowsVirtualKeyCode
 
+
+class Chrome:
     def __init__(self, init_script=None):
         port, self.dir, self.id, self.logs, self.buf = free_port(), tempfile.mkdtemp(), 0, [], b''
         # Chrome won't run as root (containers) with its sandbox on.
@@ -81,7 +92,7 @@ class Chrome:
     def key(self, k):
         for kind in ('keyDown', 'keyUp'):
             self.cdp('Input.dispatchKeyEvent', type=kind, key=k, text=k if kind == 'keyDown' and len(k) == 1 else '',
-                     windowsVirtualKeyCode=self.KEYS.get(k, ord(k.upper()[0])))
+                     windowsVirtualKeyCode=KEY_CODES.get(k, ord(k.upper()[0])))
 
     def throttle(self, mbit):
         self.cdp('Network.emulateNetworkConditions', offline=False, latency=40,
@@ -143,10 +154,9 @@ class Firefox:
             {'type': 'keyDown', 'value': k}, {'type': 'keyUp', 'value': k}]}])
 
     def close(self):
-        try:
+        # Best effort: the browser may already be gone (a connection error, or an error reply); it is killed below anyway.
+        with contextlib.suppress(OSError, RuntimeError, ValueError):
             self.call('Marionette:Quit')
-        except Exception:
-            pass
         self.proc.kill()
         self.proc.wait()
         shutil.rmtree(self.dir, ignore_errors=True)
