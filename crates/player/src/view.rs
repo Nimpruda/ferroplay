@@ -15,11 +15,16 @@ pub struct View {
 
 impl State {
     pub fn view(&self) -> View {
-        let frac = |t: f64| if self.duration > 0.0 { t / self.duration } else { 0.0 };
+        // Progress is relative to the window: the whole video, or the seekable range of a live stream.
+        let (start, end) = self.window();
+        let frac = |t: f64| if end > start && end.is_finite() { (t - start) / (end - start) } else { 0.0 };
         let mut label = String::new();
         clock(self.time, &mut label);
-        label.push_str(" / ");
-        clock(self.duration, &mut label);
+        // A live stream has no total to show.
+        if self.duration.is_finite() {
+            label.push_str(" / ");
+            clock(self.duration, &mut label);
+        }
         View {
             playing: !self.paused,
             waiting: self.waiting,

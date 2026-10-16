@@ -99,3 +99,42 @@ fn view_formats_time() {
     assert_eq!(v.label, "1:05 / 1:02:05");
     assert_eq!(loaded(0.0).state.view().label, "0:00 / 0:00");
 }
+
+fn live(window: (f64, f64)) -> Player {
+    let mut p = Player::new().with(Keyboard { step: 5.0 });
+    p.dispatch(Event::Saw(Fact::Duration(f64::INFINITY)));
+    p.dispatch(Event::Saw(Fact::Seekable(window.0, window.1)));
+    p
+}
+
+#[test]
+fn live_seeks_clamp_to_the_reported_window() {
+    let mut p = live((10.0, 60.0));
+    assert_eq!(p.dispatch(Event::Key('→')), [Cmd::Seek(10.0)], "before the window: clamped to its start");
+    p.dispatch(Event::Saw(Fact::Time(60.0)));
+    assert_eq!(p.dispatch(Event::Key('→')), [Cmd::Seek(60.0)], "after the window: clamped to its end");
+}
+
+#[test]
+fn live_seek_frac_maps_onto_the_window() {
+    let mut p = live((10.0, 60.0));
+    assert_eq!(p.dispatch(Event::Key('5')), [Cmd::Seek(35.0)]);
+    // Nothing to map onto before the host reports a window.
+    assert_eq!(live_without_window().dispatch(Event::Key('5')), []);
+}
+
+fn live_without_window() -> Player {
+    let mut p = Player::new().with(Keyboard { step: 5.0 });
+    p.dispatch(Event::Saw(Fact::Duration(f64::INFINITY)));
+    p
+}
+
+#[test]
+fn live_progress_is_relative_to_the_window_and_the_label_has_no_total() {
+    let mut p = live((10.0, 60.0));
+    p.dispatch(Event::Saw(Fact::Time(35.0)));
+    p.dispatch(Event::Saw(Fact::Buffered(45.0)));
+    let v = p.state.view();
+    assert_eq!((v.progress, v.buffered), (0.5, 0.7));
+    assert_eq!(v.label, "0:35");
+}

@@ -1,9 +1,9 @@
 //! The wasm bridge: every call carries a code, a number, and optional bytes as (pointer, length).
 //! The only `unsafe` in the workspace. Event, command and plugin codes must match `web/player.js`.
 
-use alloc::{boxed::Box, string::String, vec, vec::Vec};
+use alloc::{borrow::Cow, boxed::Box, string::String, vec, vec::Vec};
 use core::cell::RefCell;
-use hls::Hls;
+use hls::{Hls, Knob};
 use player::plugins::{AbLoop, Keyboard, Loop, StartAt};
 use player::{Cmd, Event, Fact, Intent, Player};
 
@@ -18,6 +18,8 @@ fn panic(_: &core::panic::PanicInfo) -> ! {
 #[link(wasm_import_module = "host")]
 unsafe extern "C" {
     fn cmd(id: u32, code: u32, value: f64, data: *const u8, len: usize);
+    /// The host's answer for the knob called `name`; NaN keeps the default.
+    fn tune(id: u32, name: *const u8, name_len: usize, value: f64) -> f64;
     fn render(
         id: u32,
         playing: bool,
@@ -75,9 +77,22 @@ pub extern "C" fn player_use(id: u32, plugin: u32, arg: f64) {
         1 => p.add(Loop),
         2 => p.add(StartAt::new(arg)),
         3 => p.add(AbLoop::default()),
-        4 => p.add(Hls::default()),
+        4 => p.add(Hls::tuned(move |knob| {
+            let (name, value) = (knob.name(), knob_value(knob));
+            // SAFETY: the host answers synchronously and does not call back into the core.
+            let answer = unsafe { tune(id, name.as_ptr(), name.len(), value) };
+            (!answer.is_nan()).then_some(answer)
+        })),
         _ => {}
     });
+}
+
+/// The value a knob depends on for the host: a target duration, or nothing.
+fn knob_value(knob: Knob) -> f64 {
+    match knob {
+        Knob::Ahead(target) | Knob::Behind(target) | Knob::Holdback(target) => target,
+        Knob::Safety | Knob::Retries | Knob::LiveRetries => 0.0,
+    }
 }
 
 /// Returns how many commands the event produced, so the host knows if it was handled.
@@ -125,25 +140,29 @@ fn decode(code: u32, v: f64, data: Vec<u8>) -> Option<Event> {
         23 => Saw(F::Loaded { ms: v, data }),
         24 => Saw(F::LoadFailed),
         25 => Do(I::Load(String::from_utf8(data).ok()?)),
+        // The end of the range travels in the bytes, as 8 little-endian bytes (see `encode`).
+        26 => Saw(F::Seekable(v, f64::from_le_bytes(data.as_slice().try_into().ok()?))),
         _ => return None,
     })
 }
 
-fn encode(c: &Cmd) -> (u32, f64, &[u8]) {
+fn encode(c: &Cmd) -> (u32, f64, Cow<'_, [u8]>) {
+    let none = || Cow::Borrowed(&[][..]);
     match c {
-        Cmd::Play => (0, 0.0, &[]),
-        Cmd::Pause => (1, 0.0, &[]),
-        Cmd::Seek(t) => (2, *t, &[]),
-        Cmd::Volume(v) => (3, *v, &[]),
-        Cmd::Muted(m) => (4, f64::from(u8::from(*m)), &[]),
-        Cmd::Rate(r) => (5, *r, &[]),
-        Cmd::Fullscreen(f) => (6, f64::from(u8::from(*f)), &[]),
-        Cmd::Fetch(url) => (7, 0.0, url.as_bytes()),
-        Cmd::Open(duration) => (8, *duration, &[]),
-        Cmd::Codec(mime) => (9, 0.0, mime.as_bytes()),
-        Cmd::Append(data) => (10, 0.0, data),
-        Cmd::Remove(end) => (11, *end, &[]),
-        Cmd::End => (12, 0.0, &[]),
-        Cmd::Source(url) => (13, 0.0, url.as_bytes()),
+        Cmd::Play => (0, 0.0, none()),
+        Cmd::Pause => (1, 0.0, none()),
+        Cmd::Seek(t) => (2, *t, none()),
+        Cmd::Volume(v) => (3, *v, none()),
+        Cmd::Muted(m) => (4, f64::from(u8::from(*m)), none()),
+        Cmd::Rate(r) => (5, *r, none()),
+        Cmd::Fullscreen(f) => (6, f64::from(u8::from(*f)), none()),
+        Cmd::Fetch(url, delay) => (7, *delay, Cow::Borrowed(url.as_bytes())),
+        Cmd::Open(duration) => (8, *duration, none()),
+        Cmd::Codec(mime) => (9, 0.0, Cow::Borrowed(mime.as_bytes())),
+        Cmd::Append(data) => (10, 0.0, Cow::Borrowed(data.as_slice())),
+        Cmd::Remove(end) => (11, *end, none()),
+        Cmd::End => (12, 0.0, none()),
+        Cmd::Source(url) => (13, 0.0, Cow::Borrowed(url.as_bytes())),
+        Cmd::SeekableRange(start, end) => (14, *start, Cow::Owned(end.to_le_bytes().to_vec())),
     }
 }

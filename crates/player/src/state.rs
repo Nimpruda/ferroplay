@@ -17,6 +17,8 @@ pub enum Fact {
     /// A `Cmd::Fetch` finished, after `ms` milliseconds.
     Loaded { ms: f64, data: Vec<u8> },
     LoadFailed,
+    /// The media element's seekable range (start, end), as the host reads it.
+    Seekable(f64, f64),
 }
 
 /// Something a user or plugin wants, relative to the current state.
@@ -51,8 +53,9 @@ pub enum Cmd {
     Fullscreen(bool),
     /// Set the media element's source (if it is not that already).
     Source(String),
-    /// Download a URL; the host answers with `Fact::Loaded` or `Fact::LoadFailed`.
-    Fetch(String),
+    /// Download a URL after `delay` seconds (0: now); the host answers with `Fact::Loaded` or `Fact::LoadFailed`.
+    /// A newer `Fetch` cancels a delay that has not run out yet.
+    Fetch(String, f64),
     /// Play from a Media Source of this duration, fed by the commands below.
     Open(f64),
     /// MIME type with codecs for the following appends.
@@ -62,6 +65,8 @@ pub enum Cmd {
     Remove(f64),
     /// No more data: let playback reach the end.
     End,
+    /// The live seekable range (start, end) for `setLiveSeekableRange`.
+    SeekableRange(f64, f64),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -75,6 +80,8 @@ pub struct State {
     pub waiting: bool,
     pub muted: bool,
     pub fullscreen: bool,
+    /// The seekable range the host last reported, if any.
+    pub seekable: Option<(f64, f64)>,
 }
 
 impl Default for State {
@@ -89,6 +96,7 @@ impl Default for State {
             waiting: false,
             muted: false,
             fullscreen: false,
+            seekable: None,
         }
     }
 }
@@ -97,7 +105,8 @@ impl State {
     pub fn apply(&mut self, fact: &Fact) {
         match *fact {
             Fact::Time(t) => self.time = t,
-            Fact::Duration(d) => self.duration = if d.is_finite() { d } else { 0.0 },
+            // An infinite duration is a live stream: keep it, and seek within the seekable window instead.
+            Fact::Duration(d) => self.duration = if d.is_nan() { 0.0 } else { d },
             Fact::Buffered(b) => self.buffered = b,
             Fact::Playing => (self.paused, self.waiting) = (false, false),
             Fact::Paused | Fact::Ended => (self.paused, self.waiting) = (true, false),
@@ -106,6 +115,7 @@ impl State {
             Fact::Muted(m) => self.muted = m,
             Fact::Rate(r) => self.rate = r,
             Fact::Fullscreen(f) => self.fullscreen = f,
+            Fact::Seekable(start, end) => self.seekable = Some((start, end)),
             Fact::Loaded { .. } | Fact::LoadFailed => {}
         }
     }
@@ -117,7 +127,13 @@ impl State {
             Intent::Play => out.push(Cmd::Play),
             Intent::Seek(t) => self.seek(t, out),
             Intent::SeekBy(dt) => self.seek(self.time + dt, out),
-            Intent::SeekFrac(f) => self.seek(f * self.duration, out),
+            Intent::SeekFrac(f) => {
+                // Maps onto the window; with no known end (live, before the window is reported) there is nothing to map.
+                let (start, end) = self.window();
+                if end.is_finite() {
+                    self.seek(start + f * (end - start), out);
+                }
+            }
             Intent::Volume(v) => {
                 let v = percent(v);
                 out.extend([Cmd::Volume(v), Cmd::Muted(v == 0.0)]);
@@ -137,8 +153,19 @@ impl State {
     }
 
     // Updates time optimistically so repeated seeks stack up before the media reports back.
+    /// The times a seek may go to. A finite duration is all of it. An infinite one (live) is the
+    /// seekable range the host reported, or everything from 0 until it reports one.
+    pub fn window(&self) -> (f64, f64) {
+        if self.duration.is_finite() {
+            (0.0, self.duration)
+        } else {
+            self.seekable.unwrap_or((0.0, f64::INFINITY))
+        }
+    }
+
     fn seek(&mut self, t: f64, out: &mut Vec<Cmd>) {
-        self.time = clamp(t, 0.0, self.duration);
+        let (start, end) = self.window();
+        self.time = clamp(t, start, end);
         out.push(Cmd::Seek(self.time));
     }
 }
