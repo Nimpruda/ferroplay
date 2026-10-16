@@ -8,6 +8,7 @@
 | moving to the workspace (every library crate `no_std`) | 66 → 47 KB, same exports and tests (exact cause not pinned down) |
 | talc instead of dlmalloc | −4.5 KB (−10 %) |
 | `wasm-opt -Oz` | −13 % more |
+| `[a, b].concat()` instead of `format!` for messages to the host | `format!` cost +5 KB (49.8 → 54.8 KB raw), concat +0.9 KB |
 
 Any remaining bounds check keeps a little `core::fmt` alive; chasing the last few KB was not worth `unsafe`.
 
