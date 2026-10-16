@@ -75,7 +75,7 @@ pub fn demux(ts: &[u8]) -> Media {
 fn split(ts: &[u8]) -> (Vec<Vec<u8>>, Vec<Vec<u8>>) {
     let (mut pmt, mut pids) = (None, (None, None));
     let (mut video, mut audio) = (Vec::new(), Vec::new());
-    for p in ts.chunks_exact(188).filter(|p| p[0] == 0x47) {
+    for p in ts.as_chunks::<188>().0.iter().filter(|p| p[0] == 0x47) {
         let pid = u16::from_be_bytes([p[1] & 0x1f, p[2]]);
         let start = p[1] & 0x40 != 0;
         let skip = if p[3] & 0x20 != 0 { 5 + usize::from(p[4]) } else { 4 }; // adaptation field
@@ -109,8 +109,8 @@ fn section(payload: &[u8]) -> Option<&[u8]> {
 
 /// PAT -> PID of the first program's PMT.
 fn pat(payload: &[u8]) -> Option<u16> {
-    let programs = section(payload)?.get(8..)?.chunks_exact(4);
-    programs.into_iter().find(|e| e[..2] != [0, 0]).map(|e| u16::from_be_bytes([e[2] & 0x1f, e[3]]))
+    let programs = section(payload)?.get(8..)?.as_chunks::<4>().0;
+    programs.iter().find(|e| e[..2] != [0, 0]).map(|e| u16::from_be_bytes([e[2] & 0x1f, e[3]]))
 }
 
 /// PMT -> PIDs of the H.264 (type 0x1b) and AAC (type 0x0f) streams.
@@ -130,8 +130,11 @@ fn streams(payload: &[u8]) -> Option<(Option<u16>, Option<u16>)> {
     Some((video, audio))
 }
 
-/// PES packet -> (pts, dts) when present, and the payload.
-fn pes(data: &[u8]) -> Option<(Option<(i64, i64)>, &[u8])> {
+/// (pts, dts) of a PES packet.
+type Times = (i64, i64);
+
+/// PES packet -> its times when present, and the payload.
+fn pes(data: &[u8]) -> Option<(Option<Times>, &[u8])> {
     if data.get(..3)? != [0, 0, 1] {
         return None;
     }
