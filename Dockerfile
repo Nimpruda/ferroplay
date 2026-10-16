@@ -26,6 +26,13 @@ COPY . .
 # build.sh skips the demo media without ffmpeg; the media service makes it instead.
 RUN cargo build --release -p server -p ts2mp4 && ./build.sh
 
+# ffmpeg and the make-*.sh scripts; compose mounts ./web over /src/web so they write into the repo.
+FROM debian:trixie-slim AS media
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+WORKDIR /src
+COPY make-hls.sh make-media.sh make-live.sh ./
+
 FROM gcr.io/distroless/cc-debian13:nonroot AS ts2mp4
 COPY --from=build /src/target/release/ts2mp4 /usr/local/bin/
 ENTRYPOINT ["ts2mp4"]

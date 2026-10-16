@@ -1,0 +1,32 @@
+# Dev stack: `just up` (server + demo media), `just live` adds a live stream. See the justfile.
+# Generated media lands in the repo's web/hls and web/media, shared with the native workflow.
+
+x-media: &media
+  build: { context: ., target: media }
+  image: player-media
+  user: "${HOST_UID:-1000}:${HOST_GID:-1000}" # files on the host stay yours
+  volumes: [./web:/src/web]
+
+services:
+  server:
+    build: { context: ., target: server }
+    image: player-server
+    # Localhost only: the proxy fetches any URL it is given.
+    ports: ["127.0.0.1:${PORT:-8080}:8080"]
+    volumes:
+      - ./web/hls:/app/web/hls:ro
+      - ./web/media:/app/web/media:ro
+    depends_on:
+      media: { condition: service_completed_successfully }
+
+  # One-shot: makes what is missing, like build.sh. Delete web/hls or web/media to remake it.
+  media:
+    <<: *media
+    command: sh -c '[ -f web/hls/master.m3u8 ] || ./make-hls.sh; [ -f web/media/test.mp4 ] || ./make-media.sh'
+
+  # web/hls/live/live.m3u8 until stopped; stopping ends the playlist (see make-live.sh).
+  live:
+    <<: *media
+    command: ./make-live.sh
+    init: true
+    profiles: [live]
