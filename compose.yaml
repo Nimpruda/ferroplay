@@ -30,3 +30,16 @@ services:
     command: ./make-live.sh
     init: true
     profiles: [live]
+
+  # e2e/run.py in headless Firefox and Chrome, with its own server inside the container.
+  e2e:
+    build: { context: ., target: e2e }
+    image: player-e2e
+    platform: linux/amd64
+    shm_size: 1gb # browsers crash on Docker's 64 MB default
+    volumes: # read-write: the live test writes web/hls/live-e2e and removes it after
+      - ./web/hls:/src/web/hls
+      - ./web/media:/src/web/media
+    depends_on:
+      media: { condition: service_completed_successfully }
+    profiles: [e2e]
