@@ -4,7 +4,7 @@
 
 use axum::Router;
 use axum::extract::{Request, State};
-use axum::http::header::{ACCEPT_RANGES, CONTENT_RANGE, CONTENT_TYPE, RANGE};
+use axum::http::header::{ACCEPT_RANGES, CACHE_CONTROL, CONTENT_RANGE, CONTENT_TYPE, RANGE};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, Uri};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
@@ -58,18 +58,23 @@ async fn proxy(State(client): State<reqwest::Client>, uri: Uri, headers: HeaderM
     (status, out, body).into_response()
 }
 
-/// The content types the HLS spec asks for (the defaults are `audio/x-mpegurl` and a DLNA type).
+/// The content types the HLS spec asks for (the defaults are `audio/x-mpegurl` and a DLNA type). Playlists
+/// are never cached: a live playlist changes every few seconds, and a cached one lists segments already gone.
 async fn hls_types(request: Request, next: Next) -> Response {
     let kind = match request.uri().path().rsplit('.').next() {
         Some("m3u8") => Some("application/vnd.apple.mpegurl"),
         Some("ts") => Some("video/mp2t"),
         _ => None,
     };
+    let playlist = kind == Some("application/vnd.apple.mpegurl");
     let mut response = next.run(request).await;
     if let Some(kind) = kind
         && response.status().is_success()
     {
         response.headers_mut().insert(CONTENT_TYPE, HeaderValue::from_static(kind));
+        if playlist {
+            response.headers_mut().insert(CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+        }
     }
     response
 }
