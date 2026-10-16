@@ -3,10 +3,14 @@
 const EVENTS = ['toggle', 'play', 'pause', 'seek', 'seekBy', 'seekFrac', 'volume', 'volumeBy',
   'toggleMute', 'toggleFullscreen', 'rate', 'key', 'time', 'duration', 'buffered', 'playing',
   'paused', 'ended', 'waiting', 'volumeChanged', 'muted', 'rateChanged', 'fullscreen',
-  'loaded', 'loadFailed', 'load'];
+  'loaded', 'loadFailed', 'load', 'seekable'];
 const CMDS = ['play', 'pause', 'seek', 'volume', 'muted', 'rate', 'fullscreen',
-  'fetch', 'open', 'codec', 'append', 'remove', 'end', 'source'];
+  'fetch', 'open', 'codec', 'append', 'remove', 'end', 'source', 'seekableRange'];
 const PLUGINS = ['keyboard', 'loop', 'startAt', 'abLoop', 'hls'];
+// Tuning knobs, by name (the names are `Knob::name` in crates/hls). A knob's function gets the target
+// duration (seconds) or nothing; it returns the value, or nothing to keep the default. Names not listed here
+// throw when registered: a typo must not silently keep the default.
+const KNOBS = ['ahead', 'behind', 'holdback', 'safety', 'retries', 'liveRetries'];
 const ARROWS = { ArrowLeft: '←', ArrowUp: '↑', ArrowRight: '→', ArrowDown: '↓' };
 
 const icon = (cls, d) => `<svg class="${cls}" viewBox="0 0 24 24"><path d="${d}"/></svg>`;
@@ -50,6 +54,7 @@ export async function init(url = new URL('player.wasm', import.meta.url)) {
   const host = {
     cmd: (id, code, value, ptr, len) => players.get(id).run(code, value, new Uint8Array(core.memory.buffer, ptr, len).slice()),
     render: (id, ...args) => players.get(id).render(...args),
+    tune: (id, ptr, len, value) => players.get(id).tune(utf8.decode(new Uint8Array(core.memory.buffer, ptr, len).slice()), value),
   };
   ({ instance: { exports: core } } = await WebAssembly.instantiateStreaming(fetch(url), { host }));
 }
@@ -63,6 +68,7 @@ export function player(video, plugins = { keyboard: 5 }) {
   const send = (name, value = 0, bytes) => core.player_event(id, lookup(EVENTS, name), +value, ...pass(bytes));
   const use = (name, arg = 0) => core.player_use(id, lookup(PLUGINS, name), +arg);
   const jsPlugins = [];
+  const tuners = new Map(); // knob name -> function
   for (const [name, arg] of Object.entries(plugins)) {
     if (typeof arg === 'function') jsPlugins.push(arg);
     else use(name, arg);
@@ -106,7 +112,20 @@ export function player(video, plugins = { keyboard: 5 }) {
     time.textContent = utf8.decode(new Uint8Array(core.memory.buffer, ptr, len));
   };
 
-  players.set(id, { run, render });
+  // Asked by the Rust core, synchronously. Giving nothing keeps the default; nonsense throws, here, where the
+  // message can be seen (the core would only trap with no message).
+  const tune = (name, value) => {
+    const knob = tuners.get(name);
+    if (!knob) return NaN;
+    const answer = knob(value);
+    if (answer === undefined) return NaN;
+    if (!(Number.isFinite(+answer) && +answer >= 0)) {
+      throw new RangeError(`tuning knob "${name}" gave ${answer}, not a finite, non-negative number`);
+    }
+    return +answer;
+  };
+
+  players.set(id, { run, render, tune });
 
   // While playing, the controls hide 2 s after the last pointer move or key press (see CSS).
   let idle;
@@ -167,7 +186,12 @@ export function player(video, plugins = { keyboard: 5 }) {
     load,
     play: url => { if (url) load(url); send('play'); },
     pause: () => send('pause'),
-    root, video, send, use, handle: more => Object.assign(handlers, more), destroy,
+    root, video, send, use,
+    tune: (name, knob) => {
+      if (!KNOBS.includes(name)) throw new RangeError(`unknown tuning knob "${name}", expected one of: ${KNOBS.join(', ')}`);
+      tuners.set(name, knob);
+    },
+    handle: more => Object.assign(handlers, more), destroy,
   };
   const cleanups = jsPlugins.map(plugin => plugin(api)).filter(Boolean);
 

@@ -97,12 +97,14 @@
 
   // Test media for manual checks. Local files come from web/ (see make-hls.sh and make-media.sh);
   // the other-origin button plays the local HLS from localhost, so it goes through the proxy.
+  // The live one needs make-live.sh running (it writes web/hls/live/).
   const here = location.origin;
   const elsewhere = here.replace('127.0.0.1', 'localhost');
   const SAMPLES = [
     ['HLS, local (Sintel, 3 qualities)', `${here}/hls/master.m3u8`],
     ['MP4, local (test pattern, 20 s)', `${here}/media/test.mp4`],
     ['HLS, other origin (via proxy)', `${elsewhere}/hls/master.m3u8`],
+    ['HLS, live (run ./make-live.sh first)', `${here}/hls/live/live.m3u8`],
     ['MP4, blender.org (Sintel trailer)', 'https://download.blender.org/durian/trailer/sintel_trailer-480p.mp4'],
   ];
   const samples = document.getElementById('samples');
