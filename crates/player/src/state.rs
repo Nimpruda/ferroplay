@@ -67,6 +67,10 @@ pub enum Cmd {
     End,
     /// The live seekable range (start, end) for `setLiveSeekableRange`.
     SeekableRange(f64, f64),
+    /// Something is wrong, but playback goes on: say so.
+    Warn(String),
+    /// Playback cannot go on: say why, where the viewer can see it.
+    Fail(String),
 }
 
 #[derive(Clone, Debug, PartialEq)]

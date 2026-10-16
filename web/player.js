@@ -5,7 +5,7 @@ const EVENTS = ['toggle', 'play', 'pause', 'seek', 'seekBy', 'seekFrac', 'volume
   'paused', 'ended', 'waiting', 'volumeChanged', 'muted', 'rateChanged', 'fullscreen',
   'loaded', 'loadFailed', 'load', 'seekable'];
 const CMDS = ['play', 'pause', 'seek', 'volume', 'muted', 'rate', 'fullscreen',
-  'fetch', 'open', 'codec', 'append', 'remove', 'end', 'source', 'seekableRange'];
+  'fetch', 'open', 'codec', 'append', 'remove', 'end', 'source', 'seekableRange', 'warn', 'fail'];
 const PLUGINS = ['keyboard', 'loop', 'startAt', 'abLoop', 'hls'];
 // Tuning knobs, by name (the names are `Knob::name` in crates/hls). A knob's function gets the target
 // duration (seconds) or nothing; it returns the value, or nothing to keep the default. Names not listed here
@@ -95,6 +95,14 @@ export function player(video, plugins = { keyboard: 5 }) {
     source: (_, bytes) => {
       const url = utf8.decode(bytes); // absolute: see `load`
       if (video.src !== url) video.src = url;
+    },
+    warn: (_, bytes) => console.warn(utf8.decode(bytes)),
+    // Playback has stopped: say why on the player, and to the page as an `error` event (detail: the message).
+    fail: (_, bytes) => {
+      const message = utf8.decode(bytes);
+      console.error(message);
+      root.dataset.error = message;
+      root.dispatchEvent(new CustomEvent('error', { detail: message }));
     },
   };
   const run = (code, value, bytes) => {
@@ -196,7 +204,10 @@ export function player(video, plugins = { keyboard: 5 }) {
   document.addEventListener('fullscreenchange', onFullscreen);
 
   // Absolute, so playlists resolve their URIs against a real base.
-  const load = url => send('load', 0, new TextEncoder().encode(new URL(url, document.baseURI).href));
+  const load = url => {
+    delete root.dataset.error; // a new source, a new chance
+    send('load', 0, new TextEncoder().encode(new URL(url, document.baseURI).href));
+  };
   const api = {
     load,
     play: url => { if (url) load(url); send('play'); },

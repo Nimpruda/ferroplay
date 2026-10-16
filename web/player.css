@@ -71,3 +71,14 @@
   animation: vp-spin .8s linear infinite;
 }
 @keyframes vp-spin { to { transform: rotate(1turn); } }
+
+/* Why playback stopped (the core's `fail`), over the picture. */
+.vp[data-error]::before {
+  content: attr(data-error);
+  position: absolute;
+  inset: 0 0 auto;
+  padding: 12px;
+  background: rgb(160 20 20 / .85);
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}

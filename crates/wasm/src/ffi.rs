@@ -158,5 +158,7 @@ fn encode(c: &Cmd) -> (u32, f64, Cow<'_, [u8]>) {
         Cmd::End => (12, 0.0, none()),
         Cmd::Source(url) => (13, 0.0, Cow::Borrowed(url.as_bytes())),
         Cmd::SeekableRange(start, end) => (14, *start, Cow::Owned(end.to_le_bytes().to_vec())),
+        Cmd::Warn(message) => (15, 0.0, Cow::Borrowed(message.as_bytes())),
+        Cmd::Fail(message) => (16, 0.0, Cow::Borrowed(message.as_bytes())),
     }
 }
