@@ -1,4 +1,4 @@
-use hls::playlist::{is_playlist, join, media, rewrite, segments, variants};
+use hls::playlist::{align, is_playlist, join, media, rewrite, segments, variants};
 
 const MASTER: &str = "#EXTM3U
 #EXT-X-STREAM-INF:PROGRAM-ID=1,AVERAGE-BANDWIDTH=900,BANDWIDTH=2149280,CODECS=\"mp4a.40.2,avc1.64001f\",RESOLUTION=1280x720
@@ -47,6 +47,25 @@ fn endlist_ends_an_event_playlist_and_keeps_its_segments() {
     assert_eq!((first.segments[0].sequence, second.segments[0].sequence), (0, 0));
     assert_eq!(second.segments[1].sequence, 1);
     assert_eq!(second.segments[0].uri, first.segments[0].uri);
+}
+
+#[test]
+fn a_sliding_window_keeps_its_start_times() {
+    let base = "https://cdn.test/v/index.m3u8";
+    let before = media("#EXTM3U\n#EXT-X-MEDIA-SEQUENCE:0\n#EXTINF:4,\na0.ts\n#EXTINF:4,\na1.ts\n#EXTINF:4,\na2.ts\n", base).segments;
+    // The next reload drops seq 0 and adds seq 3: seq 1 and 2 keep their times (4 s and 8 s).
+    let mut after = media("#EXTM3U\n#EXT-X-MEDIA-SEQUENCE:1\n#EXTINF:4,\na1.ts\n#EXTINF:4,\na2.ts\n#EXTINF:4,\na3.ts\n", base).segments;
+    align(&mut after, &before);
+    assert_eq!(after.iter().map(|s| (s.sequence, s.start)).collect::<Vec<_>>(), [(1, 4.0), (2, 8.0), (3, 12.0)]);
+}
+
+#[test]
+fn a_window_with_no_segment_in_common_follows_on() {
+    let base = "https://cdn.test/v/index.m3u8";
+    let before = media("#EXTM3U\n#EXT-X-MEDIA-SEQUENCE:0\n#EXTINF:4,\na0.ts\n#EXTINF:4,\na1.ts\n", base).segments;
+    let mut after = media("#EXTM3U\n#EXT-X-MEDIA-SEQUENCE:9\n#EXTINF:4,\nb9.ts\n", base).segments;
+    align(&mut after, &before);
+    assert_eq!((after[0].sequence, after[0].start), (9, 8.0));
 }
 
 #[test]

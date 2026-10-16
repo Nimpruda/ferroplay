@@ -83,6 +83,21 @@ pub fn media(text: &str, base: &str) -> Media {
     out
 }
 
+/// Moves a freshly parsed playlist onto the timeline of `previous` (the last one parsed for the same stream).
+/// A sliding window keeps its start times by sequence number. With no segment in common, it follows on
+/// from the end of `previous`.
+pub fn align(segments: &mut [Segment], previous: &[Segment]) {
+    let Some(first) = segments.first() else { return };
+    let shared = segments.iter().find_map(|new| {
+        let old = previous.iter().find(|old| old.sequence == new.sequence)?;
+        Some(old.start - new.start)
+    });
+    let shift = shared.unwrap_or_else(|| previous.last().map_or(0.0, |last| last.start + last.duration) - first.start);
+    for segment in segments {
+        segment.start += shift;
+    }
+}
+
 /// The segments of a media playlist, with their start times.
 pub fn segments(text: &str, base: &str) -> Vec<Segment> {
     media(text, base).segments
