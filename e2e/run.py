@@ -213,6 +213,26 @@ def live(url):
         shutil.rmtree(live_dir, ignore_errors=True)
 
 
+def unusable(url):
+    """Segments that are not MPEG-TS (the playlist itself, here): each one is warned about, and after three the
+    player stops and shows why, instead of a frozen frame."""
+    folder = os.path.join(ROOT, 'web/hls/unusable-e2e')
+    os.makedirs(folder, exist_ok=True)
+    Path(folder, 'list.m3u8').write_text('#EXTM3U\n#EXT-X-TARGETDURATION:2\n' + '#EXTINF:2,\n../master.m3u8\n' * 5 + '#EXT-X-ENDLIST\n')
+    b = Chrome(init_script=HIDE_NATIVE_HLS)
+    try:
+        open_page(b, url + '?play=hls/unusable-e2e/list.m3u8&plugins=hls', play=False)
+        shown = until(b, "document.querySelector('.vp').dataset.error", 15)
+        error = b.js("document.querySelector('.vp').dataset.error")
+        check('chrome: unusable segments stop playback and say why on the player',
+              shown and 'holds no MPEG-TS media' in error, error)
+        warnings = [log for log in b.logs if 'holds no MPEG-TS media' in log]
+        check('chrome: each unusable segment is warned about in the console', len(warnings) >= 3, b.logs)
+    finally:
+        b.close()
+        shutil.rmtree(folder, ignore_errors=True)
+
+
 def slow_network(url):
     b = Chrome(init_script=HIDE_NATIVE_HLS)
     b.throttle(0.6)
@@ -245,6 +265,7 @@ def main():
         playback('chrome (Rust engine)', Chrome(init_script=HIDE_NATIVE_HLS), url, engine=True)
         playback('chrome (built-in HLS)', Chrome(), url, engine=False)
         live(url)
+        unusable(url)
         links(url, other)
         slow_network(url)
     finally:

@@ -12,6 +12,14 @@ fn fetch(url: &str) -> Cmd {
     Cmd::Fetch(url.into(), 0.0)
 }
 
+/// Whether `cmds` give up on the stream with a message that contains `reason`.
+fn fails_with(cmds: &[Cmd], reason: &str) -> bool {
+    matches!(cmds.last(), Some(Cmd::Fail(message)) if message.contains(reason))
+}
+
+/// What an fMP4 segment, or an HTML page served with 200, looks like to the MPEG-TS demuxer: nothing.
+const NOT_TS: &[u8] = b"<html>not a transport stream</html>";
+
 const MASTER: &str = "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=500000\nlow.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=5000000\nhigh.m3u8\n";
 
 /// A player with the HLS plugin, asked to play `url`: it fetches the playlist instead of setting `video.src`.
@@ -110,9 +118,12 @@ fn ends_the_stream_again_after_dropping_data() {
 fn an_error_page_instead_of_a_playlist_is_a_failed_download() {
     let mut p = playing("https://cdn.test/x.m3u8");
     let page = loaded(b"<html>404</html>");
-    assert_eq!(p.dispatch(page.clone()), [fetch("https://cdn.test/x.m3u8")]);
-    assert_eq!(p.dispatch(page.clone()), [fetch("https://cdn.test/x.m3u8")]);
-    assert_eq!(p.dispatch(page), [], "gives up instead of asking forever");
+    let warning = Cmd::Warn("https://cdn.test/x.m3u8 lists no segments: not a media playlist".into());
+    assert_eq!(p.dispatch(page.clone()), [warning.clone(), fetch("https://cdn.test/x.m3u8")]);
+    assert_eq!(p.dispatch(page.clone()), [warning.clone(), fetch("https://cdn.test/x.m3u8")]);
+    let cmds = p.dispatch(page);
+    assert_eq!(cmds[0], warning);
+    assert!(fails_with(&cmds, "x.m3u8 lists no segments"), "gives up instead of asking forever: {cmds:?}");
 }
 
 #[test]
@@ -120,8 +131,51 @@ fn gives_up_after_three_failed_downloads() {
     let mut p = playing("https://cdn.test/x.m3u8");
     assert_eq!(p.dispatch(Event::Saw(Fact::LoadFailed)), [fetch("https://cdn.test/x.m3u8")]);
     assert_eq!(p.dispatch(Event::Saw(Fact::LoadFailed)), [fetch("https://cdn.test/x.m3u8")]);
-    assert_eq!(p.dispatch(Event::Saw(Fact::LoadFailed)), []);
-    assert_eq!(p.dispatch(Event::Saw(Fact::Time(1.0))), []);
+    let cmds = p.dispatch(Event::Saw(Fact::LoadFailed));
+    assert!(fails_with(&cmds, "giving up after too many failures in a row; the last: the download of https://cdn.test/x.m3u8 failed"), "{cmds:?}");
+    assert_eq!(p.dispatch(Event::Saw(Fact::Time(1.0))), [], "said once");
+}
+
+#[test]
+fn an_unusable_segment_is_said_and_skipped() {
+    let mut p = playing("https://cdn.test/movie.m3u8");
+    p.dispatch(loaded(window("s", 0, 10, 2.0).as_bytes()));
+    assert_eq!(
+        p.dispatch(loaded(NOT_TS)),
+        [Cmd::Warn("segment https://cdn.test/s0.ts holds no MPEG-TS media this player can play".into()), fetch("https://cdn.test/s1.ts")]
+    );
+}
+
+#[test]
+fn unusable_segments_in_a_row_fail_the_stream_once() {
+    let mut p = playing("https://cdn.test/movie.m3u8");
+    p.dispatch(loaded(window("s", 0, 10, 2.0).as_bytes()));
+    p.dispatch(loaded(NOT_TS));
+    p.dispatch(loaded(NOT_TS));
+    let cmds = p.dispatch(loaded(NOT_TS));
+    assert!(matches!(&cmds[..], [Cmd::Warn(_), Cmd::Fail(_)]), "{cmds:?}");
+    assert!(fails_with(&cmds, "the last: segment https://cdn.test/s2.ts holds no MPEG-TS media"), "{cmds:?}");
+    assert_eq!(p.dispatch(Event::Saw(Fact::Time(1.0))), [], "said once, and nothing more is downloaded");
+}
+
+#[test]
+fn a_usable_segment_resets_the_count_of_unusable_ones() {
+    let mut p = playing("https://cdn.test/movie.m3u8");
+    p.dispatch(loaded(window("s", 0, 10, 2.0).as_bytes()));
+    for data in [NOT_TS, NOT_TS, SAMPLE, NOT_TS, NOT_TS] {
+        let cmds = p.dispatch(loaded(data));
+        assert!(matches!(cmds.last(), Some(Cmd::Fetch(..))), "{cmds:?}");
+    }
+}
+
+#[test]
+fn a_live_stream_fails_after_its_live_limit_of_unusable_segments() {
+    let mut p = playing(LIVE);
+    p.dispatch(loaded(live_window("s", 0, 12, 2.0).as_bytes()));
+    for unusable in 1..=9 {
+        assert!(matches!(p.dispatch(loaded(NOT_TS)).last(), Some(Cmd::Fetch(..))), "unusable segment {unusable} should go on");
+    }
+    assert!(fails_with(&p.dispatch(loaded(NOT_TS)), "the last: segment https://cdn.test/s9.ts"), "the tenth gives up");
 }
 
 #[test]
@@ -316,7 +370,7 @@ fn a_live_stream_keeps_trying_until_its_live_limit() {
     for failure in 1..=9 {
         assert!(!p.dispatch(Event::Saw(Fact::LoadFailed)).is_empty(), "failure {failure} should retry");
     }
-    assert_eq!(p.dispatch(Event::Saw(Fact::LoadFailed)), [], "the tenth gives up");
+    assert!(fails_with(&p.dispatch(Event::Saw(Fact::LoadFailed)), "the last: the download of"), "the tenth gives up");
 }
 
 #[test]
@@ -324,7 +378,7 @@ fn a_tuned_live_limit_changes_when_a_live_stream_gives_up() {
     let mut p = playing_with(LIVE, Hls::tuned(|knob| matches!(knob, Knob::LiveRetries).then_some(2.0)));
     p.dispatch(loaded(live_window("s", 0, 3, 2.0).as_bytes()));
     assert!(!p.dispatch(Event::Saw(Fact::LoadFailed)).is_empty());
-    assert_eq!(p.dispatch(Event::Saw(Fact::LoadFailed)), []);
+    assert!(fails_with(&p.dispatch(Event::Saw(Fact::LoadFailed)), "the last: the download of"));
 }
 
 /// A live master: low first, then a fast download switches to high, whose two next segments load. A reload

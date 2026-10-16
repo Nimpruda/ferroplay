@@ -99,6 +99,8 @@ pub struct Hls {
     /// Where a live stream starts (its hold-back): downloads go from here until the element reports a time.
     start_at: Option<f64>,
     pending: Option<Request>,
+    /// The URL of the download in flight, or of the last one.
+    fetching: String,
     failures: u32,
     /// Download speed, bits per second; 0 until the first segment.
     bandwidth: f64,
@@ -161,8 +163,8 @@ impl Hls {
         self.appended.iter().any(|&(s, _)| s == sequence)
     }
 
-    /// Handles a finished download; false if it was unusable.
-    fn receive(&mut self, request: Request, ms: f64, data: &[u8], out: &mut Vec<Cmd>) -> bool {
+    /// Handles a finished download; why it is unusable, if it is.
+    fn receive(&mut self, request: Request, ms: f64, data: &[u8], out: &mut Vec<Cmd>) -> Result<(), String> {
         let text = core::str::from_utf8(data).unwrap_or_default();
         match request {
             Request::Master => {
@@ -177,7 +179,8 @@ impl Hls {
                 let media = playlist::media(text, &self.variants[v].uri);
                 let (live, target, mut segments) = (media.live(), media.target_duration, media.segments);
                 if segments.is_empty() {
-                    return false; // e.g. an error page: counts as a failed download
+                    // e.g. an error page: counts as a failed download
+                    return Err([&self.fetching, " lists no segments: not a media playlist"].concat());
                 }
                 self.unchanged = self.variants[v].segments.last().map(|s| s.sequence) == segments.last().map(|s| s.sequence);
                 // Times follow the playlist that arrived last, of whichever variant: they share sequence numbers.
@@ -215,11 +218,13 @@ impl Hls {
                 } else {
                     0.7 * self.bandwidth + 0.3 * sample
                 };
-                let Some(segment) = self.variants[v].segment(sequence) else { return true };
+                let Some(segment) = self.variants[v].segment(sequence) else { return Ok(()) };
                 let (start, end) = (segment.start, segment.end());
                 self.appended.push((sequence, end)); // even if unusable: skip a broken segment rather than retry it forever
                 let media = ts2mp4::demux(data);
-                let Some(pts) = media.start() else { return true };
+                let Some(pts) = media.start() else {
+                    return Err(["segment ", &self.fetching, " holds no MPEG-TS media this player can play"].concat());
+                };
                 let offset = *self.offset.get_or_insert((start * 90_000.0) as i64 - pts);
                 let init = ts2mp4::init(&media);
                 if init != self.init {
@@ -231,7 +236,19 @@ impl Hls {
                 out.push(Cmd::Append(ts2mp4::fragment(&media, (sequence as u32).wrapping_add(1), offset)));
             }
         }
-        true
+        Ok(())
+    }
+
+    /// Counts a failed download, and gives up once there are too many in a row, saying why: once, as nothing is
+    /// counted past the limit. Messages are concatenated, not `format!`ted: `core::fmt` adds 4 KB to the wasm.
+    fn failed(&mut self, reason: String, out: &mut Vec<Cmd>) {
+        let limit = self.retry_limit();
+        if (self.failures as f64) < limit {
+            self.failures += 1;
+            if self.failures as f64 >= limit {
+                out.push(Cmd::Fail(["HLS: giving up after too many failures in a row; the last: ", &reason].concat()));
+            }
+        }
     }
 
     /// Decides the next download, if any.
@@ -312,6 +329,7 @@ impl Hls {
 
     fn fetch(&mut self, request: Request, url: String, delay: f64, out: &mut Vec<Cmd>) {
         self.pending = Some(request);
+        self.fetching = url.clone();
         out.push(Cmd::Fetch(url, delay));
     }
 
@@ -345,17 +363,24 @@ impl Plugin for Hls {
             Event::Saw(Fact::Loaded { ms, data }) => {
                 if let Some(request) = self.finish() {
                     self.elapsed += *ms / 1000.0;
-                    let ok = self.receive(request, *ms, data, &mut cmds);
-                    self.failures = if ok { 0 } else { self.failures + 1 };
+                    match self.receive(request, *ms, data, &mut cmds) {
+                        Ok(()) => self.failures = 0,
+                        Err(reason) => {
+                            cmds.push(Cmd::Warn(reason.clone()));
+                            self.failed(reason, &mut cmds);
+                        }
+                    }
                 }
             }
             Event::Saw(Fact::LoadFailed) => {
                 // A failed reload is tried again after half a target duration, like one that brought nothing
                 // new: retrying at once would use up the live limit in moments.
-                if let Some(Request::Reload(..)) = self.finish() {
-                    (self.reloaded, self.unchanged) = (self.elapsed, true);
+                if let Some(request) = self.finish() {
+                    if let Request::Reload(..) = request {
+                        (self.reloaded, self.unchanged) = (self.elapsed, true);
+                    }
+                    self.failed(["the download of ", &self.fetching, " failed"].concat(), &mut cmds);
                 }
-                self.failures += 1;
             }
             _ => {}
         }
