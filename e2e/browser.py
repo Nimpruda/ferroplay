@@ -14,8 +14,11 @@ class Chrome:
 
     def __init__(self, init_script=None):
         port, self.dir, self.id, self.logs, self.buf = free_port(), tempfile.mkdtemp(), 0, [], b''
-        self.proc = subprocess.Popen(['google-chrome', '--headless=new', f'--remote-debugging-port={port}',
-            '--autoplay-policy=no-user-gesture-required', f'--user-data-dir={self.dir}', 'about:blank'],
+        # Chrome won't run as root (containers) with its sandbox on.
+        sandbox = ['--no-sandbox'] if os.geteuid() == 0 else []
+        self.proc = subprocess.Popen([os.environ.get('CHROME', 'google-chrome'), *sandbox, '--headless=new',
+            f'--remote-debugging-port={port}', '--autoplay-policy=no-user-gesture-required',
+            f'--user-data-dir={self.dir}', 'about:blank'],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         for _ in range(100):
             try:
@@ -95,7 +98,7 @@ class Firefox:
         port, self.dir, self.id, self.logs, self.buf = free_port(), tempfile.mkdtemp(), 0, [], b''
         with open(f'{self.dir}/user.js', 'w') as prefs:
             prefs.write(f'user_pref("marionette.port", {port});\nuser_pref("media.autoplay.default", 0);\n')
-        firefox = '/usr/lib/firefox/firefox' if os.path.exists('/usr/lib/firefox/firefox') else 'firefox'
+        firefox = os.environ.get('FIREFOX') or ('/usr/lib/firefox/firefox' if os.path.exists('/usr/lib/firefox/firefox') else 'firefox')
         self.proc = subprocess.Popen([firefox, '--headless', '--marionette', '--no-remote', '--profile', self.dir],
                                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         for _ in range(100):

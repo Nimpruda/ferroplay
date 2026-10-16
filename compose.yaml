@@ -1,4 +1,4 @@
-# Dev stack: `just up` (server + demo media), `just live` adds a live stream. See the justfile.
+# Dev stack: `just up` (server + demo media), `just up-live` adds a live stream. See the justfile.
 # Generated media lands in the repo's web/hls and web/media, shared with the native workflow.
 
 x-media: &media
@@ -19,10 +19,10 @@ services:
     depends_on:
       media: { condition: service_completed_successfully }
 
-  # One-shot: makes what is missing, like build.sh. Delete web/hls or web/media to remake it.
+  # One-shot: makes the demo media that is missing, like build.sh.
   media:
     <<: *media
-    command: sh -c '[ -f web/hls/master.m3u8 ] || ./make-hls.sh; [ -f web/media/test.mp4 ] || ./make-media.sh'
+    command: ./make-demo.sh
 
   # web/hls/live/live.m3u8 until stopped; stopping ends the playlist (see make-live.sh).
   live:
@@ -35,7 +35,6 @@ services:
   e2e:
     build: { context: ., target: e2e }
     image: player-e2e
-    platform: linux/amd64
     shm_size: 1gb # browsers crash on Docker's 64 MB default
     volumes: # read-write: the live test writes web/hls/live-e2e and removes it after
       - ./web/hls:/src/web/hls

@@ -9,6 +9,5 @@ if command -v wasm-opt >/dev/null; then
   wasm-opt -Oz --enable-bulk-memory --enable-nontrapping-float-to-int --enable-sign-ext \
     --enable-multivalue --enable-reference-types web/player.wasm -o web/player.wasm
 fi
-[ -d web/hls ] || ! command -v ffmpeg >/dev/null || ./make-hls.sh
-[ -f web/media/test.mp4 ] || ! command -v ffmpeg >/dev/null || ./make-media.sh
+! command -v ffmpeg >/dev/null || ./make-demo.sh
 ls -l web/player.wasm

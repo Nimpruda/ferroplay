@@ -65,12 +65,7 @@ up-live:
 down:
     docker compose --profile live --profile e2e down
 
-# Make the demo media that is missing from web/
-[group('docker')]
-docker-media:
-    docker compose run --rm --build media
-
-# End-to-end tests in a container (amd64)
+# End-to-end tests in a container
 [group('docker')]
 docker-e2e:
     docker compose --profile e2e run --rm --build e2e
