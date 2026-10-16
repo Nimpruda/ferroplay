@@ -1,0 +1,4 @@
+ignored:
+  # Pin apt package versions: Debian drops old versions from its archive, so pinned builds break
+  # within weeks. The base images are pinned by tag instead.
+  - DL3008

@@ -35,3 +35,20 @@ language = "system"
 entry = "cargo check --all-targets"
 types = ["rust"]
 pass_filenames = false
+
+# Docker. hadolint uses the binary on PATH; .hadolint.yaml says which rules are off and why.
+[[repos]]
+repo = "https://github.com/hadolint/hadolint"
+rev = "v2.12.0"
+hooks = [{ id = "hadolint" }]
+
+[[repos]]
+repo = "local"
+
+[[repos.hooks]]
+id = "compose-config"
+name = "docker compose config"
+language = "system"
+entry = "docker compose config -q"
+files = "^compose\\.yaml$"
+pass_filenames = false
