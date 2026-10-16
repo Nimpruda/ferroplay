@@ -7,7 +7,7 @@ repo = "https://github.com/pre-commit/pre-commit-hooks"
 rev = "v5.0.0"
 hooks = [
   # fixtures/ holds binary MPEG-TS, which identify tags as TypeScript text by
-  # its .ts extension, so the two hooks that rewrite files would corrupt it.
+  # its .ts extension, so the hooks that rewrite files would corrupt it.
   { id = "trailing-whitespace", exclude = "^fixtures/" },
   { id = "end-of-file-fixer", exclude = "^fixtures/" },
   { id = "mixed-line-ending", exclude = "^fixtures/" },
@@ -21,10 +21,24 @@ hooks = [
   { id = "check-case-conflict" },
 ]
 
-# Rust. No cargo fmt: the code keeps lines longer than rustfmt's default width.
+# Python (the e2e suite) and shell; prek installs these pinned versions itself. ruff's default
+# rules change between versions, so its rev is the rule set. No ruff format: like cargo fmt, it
+# would rewrite the long lines.
+[[repos]]
+repo = "https://github.com/astral-sh/ruff-pre-commit"
+rev = "v0.17.0"
+hooks = [{ id = "ruff-check" }]
+
+[[repos]]
+repo = "https://github.com/shellcheck-py/shellcheck-py"
+rev = "v0.11.0.1"
+hooks = [{ id = "shellcheck" }]
+
+# The tools on PATH: cargo, hadolint, docker.
 [[repos]]
 repo = "local"
 
+# Rust. No cargo fmt: the code keeps lines longer than rustfmt's default width.
 [[repos.hooks]]
 id = "cargo-clippy"
 name = "cargo clippy"
@@ -41,32 +55,13 @@ entry = "cargo check --all-targets"
 types = ["rust"]
 pass_filenames = false
 
-# Shell and Python (the e2e suite). No ruff format: like cargo fmt, it would rewrite the long lines.
-[[repos]]
-repo = "local"
-
+# Docker. .hadolint.yaml says which rules are off and why.
 [[repos.hooks]]
-id = "shellcheck"
-name = "shellcheck"
+id = "hadolint"
+name = "hadolint"
 language = "system"
-entry = "shellcheck"
-types = ["shell"]
-
-[[repos.hooks]]
-id = "ruff"
-name = "ruff check"
-language = "system"
-entry = "ruff check"
-types = ["python"]
-
-# Docker. hadolint uses the binary on PATH; .hadolint.yaml says which rules are off and why.
-[[repos]]
-repo = "https://github.com/hadolint/hadolint"
-rev = "v2.12.0"
-hooks = [{ id = "hadolint" }]
-
-[[repos]]
-repo = "local"
+entry = "hadolint"
+types = ["dockerfile"]
 
 [[repos.hooks]]
 id = "compose-config"
@@ -77,9 +72,6 @@ files = "^compose\\.yaml$"
 pass_filenames = false
 
 # Commit messages: a conventional commit subject, or one git writes itself (merge, revert, fixup).
-[[repos]]
-repo = "local"
-
 [[repos.hooks]]
 id = "conventional-commit"
 name = "commit subject is type(scope): subject"

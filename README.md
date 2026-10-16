@@ -5,7 +5,7 @@ About 26 KB gzipped in total (wasm 20 KB, JS 4.7 KB, CSS 0.9 KB).
 
 ```sh
 rustup target add wasm32-unknown-unknown   # once
-prek install                               # once: the git hooks in prek.toml (lints, commit messages)
+prek install                               # once: the git hooks in prek.toml (also need hadolint, docker)
 ./build.sh            # wasm -> web/player.wasm (and the demo HLS stream, if ffmpeg is installed)
 cargo run -p server   # http://127.0.0.1:8080
 cargo test            # every crate's tests, run natively
