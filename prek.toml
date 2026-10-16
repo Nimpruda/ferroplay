@@ -1,0 +1,37 @@
+default_stages = ["pre-commit"]
+
+# General hooks (builtin via pre-commit-hooks)
+[[repos]]
+repo = "https://github.com/pre-commit/pre-commit-hooks"
+rev = "v5.0.0"
+hooks = [
+  # fixtures/ holds binary MPEG-TS, which identify tags as TypeScript text by
+  # its .ts extension, so the two hooks that rewrite files would corrupt it.
+  { id = "trailing-whitespace", exclude = "^fixtures/" },
+  { id = "end-of-file-fixer", exclude = "^fixtures/" },
+  { id = "check-toml" },
+  { id = "check-merge-conflict" },
+  { id = "check-added-large-files" },
+  { id = "detect-private-key" },
+  { id = "check-case-conflict" },
+]
+
+# Rust. No cargo fmt: the code keeps lines longer than rustfmt's default width.
+[[repos]]
+repo = "local"
+
+[[repos.hooks]]
+id = "cargo-clippy"
+name = "cargo clippy"
+language = "system"
+entry = "cargo clippy --all-targets --all-features -- -D warnings"
+types = ["rust"]
+pass_filenames = false
+
+[[repos.hooks]]
+id = "cargo-check"
+name = "cargo check"
+language = "system"
+entry = "cargo check --all-targets"
+types = ["rust"]
+pass_filenames = false
