@@ -1,0 +1,7 @@
+.git
+target
+web/player.wasm
+web/hls
+web/media
+**/__pycache__
+.envrc
