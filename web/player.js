@@ -54,7 +54,7 @@ export async function init(url = new URL('player.wasm', import.meta.url)) {
   const host = {
     cmd: (id, code, value, ptr, len) => players.get(id).run(code, value, new Uint8Array(core.memory.buffer, ptr, len).slice()),
     render: (id, ...args) => players.get(id).render(...args),
-    tune: (id, ptr, len, value) => players.get(id).tune(utf8.decode(new Uint8Array(core.memory.buffer, ptr, len).slice()), value),
+    tune: (id, ptr, len, value) => players.get(id).tune(utf8.decode(new Uint8Array(core.memory.buffer, ptr, len)), value),
   };
   ({ instance: { exports: core } } = await WebAssembly.instantiateStreaming(fetch(url), { host }));
 }
@@ -119,10 +119,10 @@ export function player(video, plugins = { keyboard: 5 }) {
     if (!knob) return NaN;
     const answer = knob(value);
     if (answer === undefined) return NaN;
-    if (!(Number.isFinite(+answer) && +answer >= 0)) {
+    if (!(typeof answer === 'number' && Number.isFinite(answer) && answer >= 0)) {
       throw new RangeError(`tuning knob "${name}" gave ${answer}, not a finite, non-negative number`);
     }
-    return +answer;
+    return answer;
   };
 
   players.set(id, { run, render, tune });
@@ -163,11 +163,26 @@ export function player(video, plugins = { keyboard: 5 }) {
     for (let i = 0; i < b.length; i++) if (b.start(i) <= t) end = b.end(i);
     send('buffered', end);
   };
+  // The seekable range, for any source (a live stream's window, native HLS included). Media Source fires no
+  // event when it changes, so it is read on the media events below, and sent only when it moved. The end
+  // travels as 8 little-endian bytes, the same as `f64::from_le_bytes` in Rust.
+  let lastSeekable;
+  const seekable = () => {
+    const r = video.seekable;
+    if (!r.length) return;
+    const [start, end] = [r.start(0), r.end(r.length - 1)];
+    if (lastSeekable?.[0] === start && lastSeekable[1] === end) return;
+    lastSeekable = [start, end];
+    const bytes = new DataView(new ArrayBuffer(8));
+    bytes.setFloat64(0, end, true);
+    send('seekable', start, new Uint8Array(bytes.buffer));
+  };
   const media = {
-    timeupdate: () => { send('time', video.currentTime); buffered(); },
+    timeupdate: () => { send('time', video.currentTime); buffered(); seekable(); },
     seeking: () => send('time', video.currentTime), // no timeupdate until a seek has data
-    durationchange: () => send('duration', video.duration),
-    progress: buffered,
+    durationchange: () => { send('duration', video.duration); seekable(); },
+    progress: () => { buffered(); seekable(); },
+    emptied: () => { lastSeekable = undefined; }, // a new source: report its range even if it matches
     play: () => send('playing'),
     playing: () => send('playing'),
     pause: () => send('paused'),
@@ -188,9 +203,12 @@ export function player(video, plugins = { keyboard: 5 }) {
     pause: () => send('pause'),
     root, video, send, use,
     tune: (name, knob) => {
-      if (!KNOBS.includes(name)) throw new RangeError(`unknown tuning knob "${name}", expected one of: ${KNOBS.join(', ')}`);
+      lookup(KNOBS, name); // throws on a name that is not a knob: a typo must not silently keep the default
+      if (typeof knob !== 'function') throw new TypeError(`tuning knob "${name}" must be a function, not ${typeof knob}`);
       tuners.set(name, knob);
     },
+    // Reports the seekable range now, for a plugin that has just changed it.
+    seekable,
     handle: more => Object.assign(handlers, more), destroy,
   };
   const cleanups = jsPlugins.map(plugin => plugin(api)).filter(Boolean);

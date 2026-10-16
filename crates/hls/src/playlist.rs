@@ -18,6 +18,19 @@ pub struct Segment {
     pub sequence: u64,
 }
 
+impl Segment {
+    pub fn end(&self) -> f64 {
+        self.start + self.duration
+    }
+}
+
+impl Variant {
+    /// The segment with this sequence number, if the playlist still lists it.
+    pub fn segment(&self, sequence: u64) -> Option<&Segment> {
+        self.segments.iter().find(|s| s.sequence == sequence)
+    }
+}
+
 /// A media playlist and the tags around its segments.
 pub struct Media {
     /// `EXT-X-TARGETDURATION` in seconds (0 if absent).
@@ -92,7 +105,7 @@ pub fn align(segments: &mut [Segment], previous: &[Segment]) {
         let old = previous.iter().find(|old| old.sequence == new.sequence)?;
         Some(old.start - new.start)
     });
-    let shift = shared.unwrap_or_else(|| previous.last().map_or(0.0, |last| last.start + last.duration) - first.start);
+    let shift = shared.unwrap_or_else(|| previous.last().map_or(0.0, Segment::end) - first.start);
     for segment in segments {
         segment.start += shift;
     }

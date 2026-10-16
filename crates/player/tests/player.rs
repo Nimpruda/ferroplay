@@ -101,8 +101,7 @@ fn view_formats_time() {
 }
 
 fn live(window: (f64, f64)) -> Player {
-    let mut p = Player::new().with(Keyboard { step: 5.0 });
-    p.dispatch(Event::Saw(Fact::Duration(f64::INFINITY)));
+    let mut p = live_without_window();
     p.dispatch(Event::Saw(Fact::Seekable(window.0, window.1)));
     p
 }
@@ -137,4 +136,29 @@ fn live_progress_is_relative_to_the_window_and_the_label_has_no_total() {
     let v = p.state.view();
     assert_eq!((v.progress, v.buffered), (0.5, 0.7));
     assert_eq!(v.label, "0:35");
+}
+
+#[test]
+fn start_at_waits_for_a_finite_duration() {
+    // A live stream has no position in a known whole: StartAt leaves it to pick its own start.
+    let mut p = Player::new().with(StartAt::new(20.0));
+    assert_eq!(p.dispatch(Event::Saw(Fact::Duration(f64::INFINITY))), []);
+    assert_eq!(p.dispatch(Event::Saw(Fact::Duration(60.0))), [Cmd::Seek(20.0)]);
+}
+
+#[test]
+fn live_progress_stays_on_the_bar_when_the_window_slides_past_the_playhead() {
+    let mut p = live((100.0, 124.0));
+    p.dispatch(Event::Saw(Fact::Time(90.0))); // paused while the window slid on
+    p.dispatch(Event::Saw(Fact::Buffered(0.0))); // nothing buffered under the playhead
+    let v = p.state.view();
+    assert_eq!((v.progress, v.buffered), (0.0, 0.0));
+}
+
+#[test]
+fn a_new_load_forgets_the_old_seekable_window() {
+    let mut p = live((3600.0, 3624.0));
+    p.dispatch(Event::Do(Intent::Load("https://cdn.test/other.m3u8".into())));
+    // Still live, but the new stream has not reported its window: nothing to map the number keys onto.
+    assert_eq!(p.dispatch(Event::Key('0')), []);
 }

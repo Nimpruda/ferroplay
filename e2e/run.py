@@ -24,12 +24,20 @@ def check(name, ok, detail=''):
         failures.append(name)
 
 
-def until(b, condition, seconds):
-    for _ in range(int(seconds * 4)):
-        if b.js(condition):
+def wait_for(condition, seconds, step=0.25):
+    for _ in range(int(seconds / step)):
+        if condition():
             return True
-        time.sleep(0.25)
+        time.sleep(step)
     return False
+
+
+def until(b, condition, seconds):
+    return wait_for(lambda: b.js(condition), seconds)
+
+
+def seekable_end(b):
+    return b.js(f"(v => v.seekable.length ? v.seekable.end(v.seekable.length - 1) : 0)({V})")
 
 
 def state(b):
@@ -53,17 +61,11 @@ def open_page(b, url, play=True):
         b.js("document.querySelector('.vp [data-do=toggle]').click()")
 
 
-def stop_live_streams():
-    """A stream still writing into web/hls/live would race the converter check and the live test."""
-    subprocess.run(['pkill', '-INT', '-x', 'ffmpeg'])
-    time.sleep(2)
-
-
 def converter():
     """Every segment of every quality, through the Rust converter, must decode cleanly in ffmpeg."""
     subprocess.run(['cargo', 'build', '-q', '-p', 'ts2mp4'], cwd=ROOT, check=True)
     tool = os.path.join(ROOT, 'target/debug/ts2mp4')
-    segments = sorted(glob.glob(os.path.join(ROOT, 'web/hls/*/*.ts')))
+    segments = sorted(glob.glob(os.path.join(ROOT, 'web/hls/[0-9]*p/*.ts')))  # the VOD qualities, not a live folder
     bad = []
     for path in segments:
         with open(path, 'rb') as ts:
@@ -134,70 +136,72 @@ def links(url, other):
 
 def live(url):
     """A live stream made by make-live.sh (no ENDLIST, segments created and deleted as it runs): playback starts
-    near the live edge, keeps going across playlist reloads, and ends normally once the stream is stopped."""
-    stop_live_streams()
-    live_dir = os.path.join(ROOT, 'web/hls/live')
+    at the hold-back, keeps going across playlist reloads, and ends normally once the stream is stopped. The
+    stream gets its own folder, so one run by hand in web/hls/live is left alone."""
+    live_dir = os.path.join(ROOT, 'web/hls/live-e2e')
+    page = url + '?play=hls/live-e2e/live.m3u8&plugins=hls'
     shutil.rmtree(live_dir, ignore_errors=True)
-    stream = subprocess.Popen([os.path.join(ROOT, 'make-live.sh')], cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    stream = subprocess.Popen([os.path.join(ROOT, 'make-live.sh')], cwd=ROOT, env={**os.environ, 'OUT': 'web/hls/live-e2e'},
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    browsers = []
     try:
         playlist = os.path.join(live_dir, 'live.m3u8')
-        ready = wait_for(lambda: os.path.exists(playlist) and open(playlist).read().count('#EXTINF') >= 2, 30)
-        check('live: the stream writes a playlist', ready)
+        # A full window (6 segments of 4 s), so the start is a real hold-back (3 × 4 s from the end), not 0.
+        ready = wait_for(lambda: os.path.exists(playlist) and open(playlist).read().count('#EXTINF') >= 6, 45, 0.5)
+        check('live: the stream writes a full window', ready)
         if not ready:
             return
 
         b = Firefox()
-        open_page(b, url + '?play=hls/live/live.m3u8&plugins=hls', play=False)
+        browsers.append(b)
+        open_page(b, page, play=False)
         # Errors after the page loads: uncaught ones, and rejected promises (a failed core call lands here).
         b.js("(() => { window.liveErrors = []; window.addEventListener('error', e => liveErrors.push(String(e.error ?? e.message)));"
              " window.addEventListener('unhandledrejection', e => liveErrors.push('rejected: ' + String(e.reason))); return 0; })()")
         started = until(b, f"{V}.currentTime > 2", 20)
-        start = state(b)
-        seekable_end = b.js(f"(v => v.seekable.length ? v.seekable.end(v.seekable.length - 1) : 0)({V})")
-        check('live: starts near the live edge', started and seekable_end - start['t'] < 16, f'{start}, seekable ends at {seekable_end:.1f}')
+        start, edge = state(b), seekable_end(b)
+        check('live: starts at the hold-back, about 12 s from the live edge', started and 8 <= edge - start['t'] <= 16,
+              f'{start}, seekable ends at {edge:.1f}')
 
         time.sleep(35)
         s = state(b)
-        reloads = len(downloads(b, 'hls/live/live.m3u8'))
-        dur = b.js(f"String({V}.duration)")
-        recent = b.js("performance.getEntriesByType('resource').map(e => e.name.split('/').pop() + ' ' + Math.round(e.startTime) + ' ' + e.responseStatus).slice(-10)")
         s['ended'] = b.js(f"{V}.ended")
+        reloads = len(downloads(b, 'hls/live-e2e/live.m3u8'))
+        recent = b.js("performance.getEntriesByType('resource').map(e => e.name.split('/').pop() + ' ' + Math.round(e.startTime) + ' ' + e.responseStatus).slice(-10)")
         check('live: keeps playing across playlist reloads', s['t'] > 30 and not s['paused'] and not s['ended'] and reloads >= 3,
               f'{s}, playlist requests: {reloads}, recent requests: {recent}')
+        dur = b.js(f"String({V}.duration)")
         check('live: no fixed duration and no end while live', dur == 'Infinity', f'duration {dur}')
-        seekable_later = b.js(f"(v => v.seekable.length ? v.seekable.end(v.seekable.length - 1) : 0)({V})")
-        check('live: the seekable range follows the playlist window', seekable_later > seekable_end + 8,
-              f'seekable end {seekable_end:.1f} s at the start, {seekable_later:.1f} s later')
+        later = seekable_end(b)
+        check('live: the seekable range follows the playlist window', later > edge + 8, f'seekable end {edge:.1f} s at the start, {later:.1f} s later')
         check('live: no errors', not s['error'] and not b.js('window.liveErrors'), b.js('window.liveErrors'))
 
         # The range reaches the MediaSource: the calls are recorded in Chrome (Rust engine), while the stream is live.
         c = Chrome(init_script=HIDE_NATIVE_HLS + '\n' + RECORD_LIVE_RANGES)
-        open_page(c, url + '?play=hls/live/live.m3u8&plugins=hls', play=False)
+        browsers.append(c)
+        open_page(c, page, play=False)
         until(c, f"{V}.currentTime > 2", 20)
         time.sleep(12)
         ranges = c.js('window.liveRanges')
         ok = bool(ranges) and all(0 <= start <= end and end < 1e9 for start, end in ranges) and ranges[-1][1] > ranges[0][1]
         check('live: the window reaches the MediaSource, and it moves', ok, f'{len(ranges)} calls, first {ranges[:1]}, last {ranges[-1:]}')
-        c.close()
 
         stream.send_signal(signal.SIGINT)  # the playlist gets ENDLIST: a finished stream
         stream.wait(timeout=30)
         check('live: stopping the stream ends the playlist', 'EXT-X-ENDLIST' in open(playlist).read())
         ended = until(b, f"{V}.ended", 60)
         check('live: plays to the end once the stream has ended', ended and not state(b)['error'], state(b))
-        b.close()
     finally:
+        for browser in browsers:
+            browser.close()
         if stream.poll() is None:
             stream.send_signal(signal.SIGINT)
-            stream.wait(timeout=30)
-
-
-def wait_for(condition, seconds):
-    for _ in range(int(seconds * 2)):
-        if condition():
-            return True
-        time.sleep(0.5)
-    return False
+            try:
+                stream.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                stream.kill()
+                stream.wait()
+        shutil.rmtree(live_dir, ignore_errors=True)
 
 
 def slow_network(url):
@@ -215,7 +219,6 @@ def main():
     for needed in ('web/player.wasm', 'web/hls/master.m3u8'):
         if not os.path.exists(os.path.join(ROOT, needed)):
             sys.exit(f'missing {needed}: run ./build.sh (with ffmpeg installed) first')
-    stop_live_streams()
     converter()
 
     port = free_port()

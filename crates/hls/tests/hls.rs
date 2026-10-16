@@ -12,9 +12,15 @@ fn fetch(url: &str) -> Cmd {
     Cmd::Fetch(url.into(), 0.0)
 }
 
+const MASTER: &str = "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=500000\nlow.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=5000000\nhigh.m3u8\n";
+
 /// A player with the HLS plugin, asked to play `url`: it fetches the playlist instead of setting `video.src`.
 fn playing(url: &str) -> Player {
-    let mut p = Player::new().with(Hls::default());
+    playing_with(url, Hls::default())
+}
+
+fn playing_with(url: &str, hls: Hls) -> Player {
+    let mut p = Player::new().with(hls);
     assert_eq!(p.dispatch(Event::Do(Intent::Load(url.into()))), [fetch(url)]);
     p
 }
@@ -33,21 +39,12 @@ fn window(name: &str, first: u64, count: u64, duration: f64) -> String {
     text + "#EXT-X-ENDLIST\n"
 }
 
-fn media_playlist(name: &str, segments: usize, duration: f64) -> String {
-    let mut text = String::from("#EXTM3U\n#EXT-X-TARGETDURATION:10\n");
-    for i in 0..segments {
-        text += &format!("#EXTINF:{duration:.3},\n{name}{i}.ts\n");
-    }
-    text + "#EXT-X-ENDLIST\n"
-}
-
 #[test]
 fn plays_a_master_playlist_and_moves_up_in_quality() {
     let mut p = playing("https://cdn.test/v/master.m3u8");
-    let master = "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=500000\nlow.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=5000000\nhigh.m3u8\n";
-    assert_eq!(p.dispatch(loaded(master.as_bytes())), [fetch("https://cdn.test/v/low.m3u8")]);
+    assert_eq!(p.dispatch(loaded(MASTER.as_bytes())), [fetch("https://cdn.test/v/low.m3u8")]);
     assert_eq!(
-        p.dispatch(loaded(media_playlist("low", 3, 2.0).as_bytes())),
+        p.dispatch(loaded(window("low", 0, 3, 2.0).as_bytes())),
         [Cmd::Open(6.0), fetch("https://cdn.test/v/low0.ts")]
     );
 
@@ -57,7 +54,7 @@ fn plays_a_master_playlist_and_moves_up_in_quality() {
     assert_eq!(mime, "video/mp4; codecs=\"avc1.64000b,mp4a.40.2\"");
     assert_eq!(&init[4..8], b"ftyp");
     assert_eq!(next, &fetch("https://cdn.test/v/high.m3u8"));
-    assert_eq!(p.dispatch(loaded(media_playlist("high", 3, 2.0).as_bytes())), [fetch("https://cdn.test/v/high1.ts")]);
+    assert_eq!(p.dispatch(loaded(window("high", 0, 3, 2.0).as_bytes())), [fetch("https://cdn.test/v/high1.ts")]);
 
     // Same codec setup: no new init segment, just the fragment.
     assert!(matches!(&p.dispatch(loaded(SAMPLE))[..], [Cmd::Append(_), Cmd::Fetch(url, _)] if url.ends_with("high2.ts")));
@@ -68,11 +65,10 @@ fn plays_a_master_playlist_and_moves_up_in_quality() {
 #[test]
 fn moves_down_in_quality_after_a_single_slow_download() {
     let mut p = playing("https://cdn.test/v/master.m3u8");
-    let master = "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=500000\nlow.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=5000000\nhigh.m3u8\n";
-    p.dispatch(loaded(master.as_bytes()));
-    p.dispatch(loaded(media_playlist("low", 9, 2.0).as_bytes()));
+    p.dispatch(loaded(MASTER.as_bytes()));
+    p.dispatch(loaded(window("low", 0, 9, 2.0).as_bytes()));
     p.dispatch(loaded(SAMPLE)); // very fast: up to high
-    assert_eq!(p.dispatch(loaded(media_playlist("high", 9, 2.0).as_bytes())), [fetch("https://cdn.test/v/high1.ts")]);
+    assert_eq!(p.dispatch(loaded(window("high", 0, 9, 2.0).as_bytes())), [fetch("https://cdn.test/v/high1.ts")]);
     // 45 KB in 2 s is ~180 kbit/s: straight back down, without waiting for an average to settle.
     let slow = Event::Saw(Fact::Loaded { ms: 2000.0, data: SAMPLE.to_vec() });
     assert!(matches!(p.dispatch(slow).last(), Some(Cmd::Fetch(u, _)) if u.ends_with("low2.ts")));
@@ -82,7 +78,7 @@ fn moves_down_in_quality_after_a_single_slow_download() {
 fn buffers_30_s_ahead_follows_seeks_and_drops_the_far_past() {
     let mut p = playing("https://cdn.test/movie.m3u8");
     // A media playlist straight away (no master): 100 segments of 10 s.
-    assert_eq!(p.dispatch(loaded(media_playlist("s", 100, 10.0).as_bytes())), [Cmd::Open(1000.0), fetch("https://cdn.test/s0.ts")]);
+    assert_eq!(p.dispatch(loaded(window("s", 0, 100, 10.0).as_bytes())), [Cmd::Open(1000.0), fetch("https://cdn.test/s0.ts")]);
     assert!(matches!(p.dispatch(loaded(SAMPLE)).last(), Some(Cmd::Fetch(u, _)) if u.ends_with("s1.ts")));
     assert!(matches!(p.dispatch(loaded(SAMPLE)).last(), Some(Cmd::Fetch(u, _)) if u.ends_with("s2.ts")));
     // 0–30 s is loaded: wait until the playhead moves on.
@@ -103,7 +99,7 @@ fn buffers_30_s_ahead_follows_seeks_and_drops_the_far_past() {
 fn ends_the_stream_again_after_dropping_data() {
     // Removing or appending data reopens a finished Media Source.
     let mut p = playing("https://cdn.test/short.m3u8");
-    p.dispatch(loaded(media_playlist("s", 3, 10.0).as_bytes()));
+    p.dispatch(loaded(window("s", 0, 3, 10.0).as_bytes()));
     p.dispatch(loaded(SAMPLE));
     p.dispatch(loaded(SAMPLE));
     assert!(matches!(&p.dispatch(loaded(SAMPLE))[..], [Cmd::Append(_), Cmd::End]));
@@ -134,15 +130,14 @@ fn other_urls_go_to_the_media_element_and_stop_the_stream() {
     let mp4 = "https://cdn.test/clip.mp4";
     assert_eq!(p.dispatch(Event::Do(Intent::Load(mp4.into()))), [Cmd::Source(mp4.into())]);
     // The playlist download still in flight lands: ignored.
-    assert_eq!(p.dispatch(loaded(media_playlist("s", 3, 2.0).as_bytes())), []);
+    assert_eq!(p.dispatch(loaded(window("s", 0, 3, 2.0).as_bytes())), []);
     assert_eq!(p.dispatch(Event::Saw(Fact::Time(1.0))), []);
 }
 
 #[test]
 fn a_quality_switch_loads_the_same_sequence_number() {
     let mut p = playing("https://cdn.test/v/master.m3u8");
-    let master = "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=500000\nlow.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=5000000\nhigh.m3u8\n";
-    p.dispatch(loaded(master.as_bytes()));
+    p.dispatch(loaded(MASTER.as_bytes()));
     p.dispatch(loaded(window("low", 0, 3, 2.0).as_bytes()));
     p.dispatch(loaded(SAMPLE)); // seq 0 in: the fast download switches to high, which loads its playlist first
     p.dispatch(loaded(SAMPLE)); // seq 1 in, from the low playlist
@@ -153,8 +148,7 @@ fn a_quality_switch_loads_the_same_sequence_number() {
 #[test]
 fn a_switch_to_a_later_window_keeps_its_timeline() {
     let mut p = playing("https://cdn.test/v/master.m3u8");
-    let master = "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=500000\nlow.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=5000000\nhigh.m3u8\n";
-    p.dispatch(loaded(master.as_bytes()));
+    p.dispatch(loaded(MASTER.as_bytes()));
     p.dispatch(loaded(window("low", 0, 10, 10.0).as_bytes()));
     p.dispatch(loaded(SAMPLE)); // seq 0 in, then the switch to high
     // High's window is seq 5..9, at 50 s on the timeline (the low playlist's times). Nothing else is loaded.
@@ -233,8 +227,7 @@ fn a_needed_segment_replaces_a_waiting_reload_and_the_reload_is_rescheduled() {
 #[test]
 fn a_quality_switch_while_live_fetches_the_new_playlist_first() {
     let mut p = playing("https://cdn.test/v/master.m3u8");
-    let master = "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=500000\nlow.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=5000000\nhigh.m3u8\n";
-    p.dispatch(loaded(master.as_bytes()));
+    p.dispatch(loaded(MASTER.as_bytes()));
     p.dispatch(loaded(live_window("low", 0, 3, 2.0).as_bytes()));
     let cmds = p.dispatch(loaded(SAMPLE));
     assert_eq!(cmds.last(), Some(&fetch("https://cdn.test/v/high.m3u8")));
@@ -283,11 +276,10 @@ fn seeking_anywhere_in_the_window_plays_from_there() {
 #[test]
 fn a_tuned_holdback_changes_where_a_live_stream_starts() {
     // Two target durations instead of three: 20 − 2 × 4 = 12 s, which is in segment 6 (12–14 s).
-    let mut p = Player::new().with(Hls::tuned(|knob| match knob {
+    let mut p = playing_with(LIVE, Hls::tuned(|knob| match knob {
         Knob::Holdback(target) => Some(2.0 * target),
         _ => None,
     }));
-    p.dispatch(Event::Do(Intent::Load(LIVE.into())));
     assert_eq!(
         p.dispatch(loaded(live_window_4s_target(10).as_bytes())),
         [Cmd::Open(f64::INFINITY), Cmd::SeekableRange(0.0, 20.0), Cmd::Seek(12.0), fetch("https://cdn.test/s6.ts")]
@@ -296,8 +288,7 @@ fn a_tuned_holdback_changes_where_a_live_stream_starts() {
 
 #[test]
 fn a_tuned_ahead_of_zero_loads_no_segment_until_the_playhead_moves() {
-    let mut p = Player::new().with(Hls::tuned(|knob| matches!(knob, Knob::Ahead(_)).then_some(0.0)));
-    p.dispatch(Event::Do(Intent::Load(LIVE.into())));
+    let mut p = playing_with(LIVE, Hls::tuned(|knob| matches!(knob, Knob::Ahead(_)).then_some(0.0)));
     // Nothing is within reach, so the only download is the reload, due 10 s after the playlist.
     assert_eq!(
         p.dispatch(loaded(live_window("s", 0, 3, 2.0).as_bytes())),
@@ -310,8 +301,7 @@ fn a_tuned_value_that_makes_no_sense_is_not_hidden() {
     // A negative, infinite or NaN hold-back panics, naming the knob: nothing falls back to a default.
     for nonsense in [-1.0, f64::INFINITY, f64::NAN] {
         let crashed = std::panic::catch_unwind(move || {
-            let mut p = Player::new().with(Hls::tuned(move |knob| matches!(knob, Knob::Holdback(_)).then_some(nonsense)));
-            p.dispatch(Event::Do(Intent::Load(LIVE.into())));
+            let mut p = playing_with(LIVE, Hls::tuned(move |knob| matches!(knob, Knob::Holdback(_)).then_some(nonsense)));
             p.dispatch(loaded(live_window_4s_target(10).as_bytes()));
         });
         assert!(crashed.is_err(), "{nonsense} should crash");
@@ -331,9 +321,80 @@ fn a_live_stream_keeps_trying_until_its_live_limit() {
 
 #[test]
 fn a_tuned_live_limit_changes_when_a_live_stream_gives_up() {
-    let mut p = Player::new().with(Hls::tuned(|knob| matches!(knob, Knob::LiveRetries).then_some(2.0)));
-    p.dispatch(Event::Do(Intent::Load(LIVE.into())));
+    let mut p = playing_with(LIVE, Hls::tuned(|knob| matches!(knob, Knob::LiveRetries).then_some(2.0)));
     p.dispatch(loaded(live_window("s", 0, 3, 2.0).as_bytes()));
     assert!(!p.dispatch(Event::Saw(Fact::LoadFailed)).is_empty());
     assert_eq!(p.dispatch(Event::Saw(Fact::LoadFailed)), []);
+}
+
+/// A live master: low first, then a fast download switches to high, whose two next segments load. A reload
+/// of high is then waiting.
+fn live_switch_to_high() -> Player {
+    let mut p = playing("https://cdn.test/v/master.m3u8");
+    p.dispatch(loaded(MASTER.as_bytes()));
+    p.dispatch(loaded(live_window("low", 0, 3, 2.0).as_bytes()));
+    assert_eq!(p.dispatch(loaded(SAMPLE)).last(), Some(&fetch("https://cdn.test/v/high.m3u8")));
+    p.dispatch(loaded(live_window("high", 0, 3, 2.0).as_bytes()));
+    p.dispatch(loaded(SAMPLE));
+    assert!(matches!(p.dispatch(loaded(SAMPLE)).last(), Some(Cmd::Fetch(u, d)) if u.ends_with("high.m3u8") && *d > 0.0));
+    p
+}
+
+#[test]
+fn after_a_quality_switch_live_reloads_follow_the_new_quality() {
+    // Reloads of high slide one segment each time: sequence k starts at 2k s. They line up with high's own
+    // last playlist, not with low's, which stopped being reloaded at the switch.
+    let mut p = live_switch_to_high();
+    for k in 1..=5u64 {
+        let cmds = p.dispatch(loaded(live_window("high", k, 3, 2.0).as_bytes()));
+        assert_eq!(cmds.first(), Some(&Cmd::SeekableRange(2.0 * k as f64, 2.0 * k as f64 + 6.0)), "reload {k}: {cmds:?}");
+        p.dispatch(loaded(SAMPLE));
+    }
+}
+
+#[test]
+fn an_endlist_on_the_new_quality_ends_only_once_its_own_last_segment_is_in() {
+    let mut p = live_switch_to_high();
+    // high3..high5 are missing: fetch the next one, no End (low's last segment being in does not count).
+    assert_eq!(p.dispatch(loaded(window("high", 0, 6, 2.0).as_bytes())), [fetch("https://cdn.test/v/high3.ts")]);
+}
+
+#[test]
+fn a_failed_live_reload_is_retried_after_half_a_target_duration() {
+    let mut p = playing(LIVE);
+    p.dispatch(loaded(live_window("s", 0, 3, 2.0).as_bytes()));
+    for _ in 0..3 {
+        p.dispatch(loaded(SAMPLE));
+    }
+    // The reload waited its 9.97 s and failed: the retry waits half the 10 s target, not nothing.
+    let cmds = p.dispatch(Event::Saw(Fact::LoadFailed));
+    assert!(matches!(cmds.last(), Some(c) if is_delay(c, LIVE, 5.0)), "{cmds:?}");
+}
+
+#[test]
+fn a_short_live_window_still_drops_what_is_far_behind() {
+    // Three 2 s segments slide on every reload, so a segment leaves the window long before it is 30 s
+    // behind the playhead. It is dropped by its time, not by the window.
+    let target_2s = |first| live_window("s", first, 3, 2.0).replace("TARGETDURATION:10", "TARGETDURATION:2");
+    let mut p = playing(LIVE);
+    let mut cmds = p.dispatch(loaded(target_2s(0).as_bytes()));
+    for _ in 0..3 {
+        cmds.extend(p.dispatch(loaded(SAMPLE)));
+    }
+    for k in 1..=30u64 {
+        cmds.extend(p.dispatch(loaded(target_2s(k).as_bytes())));
+        cmds.extend(p.dispatch(loaded(SAMPLE)));
+        cmds.extend(p.dispatch(Event::Saw(Fact::Time(2.0 * k as f64 + 1.0))));
+    }
+    // Dropping happens when the next download is decided, so it keeps up with the playhead (61 s at the end,
+    // 30 s kept) to within a segment or two.
+    let last_drop = cmds.iter().rev().find_map(|c| if let Cmd::Remove(until) = c { Some(*until) } else { None });
+    assert!(last_drop.is_some_and(|until| until > 25.0), "last drop: {last_drop:?}");
+}
+
+#[test]
+fn a_huge_sequence_number_does_not_overflow() {
+    let mut p = playing(LIVE);
+    p.dispatch(loaded(live_window("s", u32::MAX as u64, 3, 2.0).as_bytes()));
+    assert!(matches!(p.dispatch(loaded(SAMPLE)).last(), Some(Cmd::Fetch(..))));
 }

@@ -3,7 +3,7 @@
 // Browsers with built-in HLS need nothing: the URL becomes `video.src`. Elsewhere this turns on
 // the Rust `hls` plugin, which decides everything; this file only carries out its commands:
 // downloads and Media Source calls.
-export function hls({ video, send, use, handle }) {
+export function hls({ video, send, use, handle, seekable }) {
   if (video.canPlayType('application/vnd.apple.mpegurl') || !window.MediaSource) return;
   const text = bytes => new TextDecoder().decode(bytes);
   let download = new AbortController();
@@ -14,15 +14,8 @@ export function hls({ video, send, use, handle }) {
     const timer = setTimeout(resolve, ms);
     signal.addEventListener('abort', () => { clearTimeout(timer); reject(signal.reason); }, { once: true });
   });
-  // Seekable times travel as 8 little-endian bytes, the same as `f64::to_le_bytes` in Rust.
-  const toBytes = n => { const view = new DataView(new ArrayBuffer(8)); view.setFloat64(0, n, true); return new Uint8Array(view.buffer); };
+  // The end of a seekable range travels as 8 little-endian bytes, the same as `f64::to_le_bytes` in Rust.
   const fromBytes = bytes => new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getFloat64(0, true);
-  // Reports the seekable range the element now has. Media Source fires no event for a range change.
-  const report = () => {
-    const ranges = video.seekable;
-    if (ranges.length) send('seekable', ranges.start(0), toBytes(ranges.end(ranges.length - 1)));
-  };
-  video.addEventListener('progress', report);
 
   // A Media Source takes one change at a time: queue them, run the next one when it is free.
   const pump = () => {
@@ -78,14 +71,13 @@ export function hls({ video, send, use, handle }) {
         return console.warn(`seekable range ${start}–${end} ignored`);
       }
       try { source.setLiveSeekableRange(start, end); } catch (e) { return console.warn(e); }
-      report();
+      seekable(); // no event fires for the change: report it now
     }),
   });
   use('hls');
 
   return () => {
     download.abort();
-    video.removeEventListener('progress', report);
     URL.revokeObjectURL(objectUrl);
   };
 }
@@ -93,7 +85,7 @@ export function hls({ video, send, use, handle }) {
 // `hls` with tuned values. Each knob is a function returning its value: `ahead`, `behind` and `holdback`
 // get the target duration (seconds) and return seconds; `safety` (share of bandwidth) and `retries` get
 // nothing. A knob left out keeps its default: 30 s ahead and behind, a hold-back of three target durations,
-// 0.8 of the bandwidth, and 3 retries.
+// 0.8 of the bandwidth, and 3 retries (10 for a live stream, `liveRetries`).
 export const hlsWith = knobs => api => {
   for (const [name, knob] of Object.entries(knobs)) api.tune(name, knob);
   return hls(api);

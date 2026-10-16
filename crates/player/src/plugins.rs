@@ -62,7 +62,8 @@ impl Plugin for AbLoop {
     }
 }
 
-/// Jump to a timestamp once the duration is known (e.g. resume, skip intro).
+/// Jump to a timestamp once the duration is known (e.g. resume, skip intro). Not on a live stream: its
+/// times are not a position in a known whole, and the stream picks its own start.
 pub struct StartAt(Option<f64>);
 
 impl StartAt {
@@ -75,6 +76,7 @@ impl Plugin for StartAt {
     fn on(&mut self, state: &State, event: &Event, out: &mut Vec<Intent>) {
         if let Event::Saw(Fact::Duration(_)) = event
             && state.duration > 0.0
+            && state.duration.is_finite()
             && let Some(time) = self.0.take()
         {
             out.push(Intent::Seek(time));

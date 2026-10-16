@@ -1,4 +1,4 @@
-use crate::state::State;
+use crate::state::{State, clamp};
 use alloc::string::String;
 
 /// What the UI should show. Derived from state, never stored.
@@ -17,7 +17,8 @@ impl State {
     pub fn view(&self) -> View {
         // Progress is relative to the window: the whole video, or the seekable range of a live stream.
         let (start, end) = self.window();
-        let frac = |t: f64| if end > start && end.is_finite() { (t - start) / (end - start) } else { 0.0 };
+        // Clamped: the playhead or the buffered end can sit outside a live window that has slid on.
+        let frac = |t: f64| if end > start && end.is_finite() { clamp((t - start) / (end - start), 0.0, 1.0) } else { 0.0 };
         let mut label = String::new();
         clock(self.time, &mut label);
         // A live stream has no total to show.

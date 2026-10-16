@@ -45,7 +45,14 @@ impl Player {
     pub fn dispatch(&mut self, event: Event) -> Vec<Cmd> {
         let mut intents = Vec::new();
         match &event {
-            Event::Do(intent) => intents.push(intent.clone()),
+            Event::Do(intent) => {
+                // A new source: the old one's seekable window says nothing about it. Done here, before the
+                // plugins, because a plugin may take the load over (HLS does) and the intent never reaches State.
+                if let Intent::Load(_) = intent {
+                    self.state.seekable = None;
+                }
+                intents.push(intent.clone());
+            }
             Event::Saw(fact) => self.state.apply(fact),
             Event::Key(_) => {}
         }

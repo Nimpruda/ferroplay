@@ -152,7 +152,6 @@ impl State {
         }
     }
 
-    // Updates time optimistically so repeated seeks stack up before the media reports back.
     /// The times a seek may go to. A finite duration is all of it. An infinite one (live) is the
     /// seekable range the host reported, or everything from 0 until it reports one.
     pub fn window(&self) -> (f64, f64) {
@@ -163,6 +162,7 @@ impl State {
         }
     }
 
+    // Updates time optimistically so repeated seeks stack up before the media reports back.
     fn seek(&mut self, t: f64, out: &mut Vec<Cmd>) {
         let (start, end) = self.window();
         self.time = clamp(t, start, end);
@@ -171,7 +171,7 @@ impl State {
 }
 
 // Unlike `f64::clamp`, never panics, so no float formatting lands in the binary.
-fn clamp(x: f64, lo: f64, hi: f64) -> f64 {
+pub(crate) fn clamp(x: f64, lo: f64, hi: f64) -> f64 {
     x.max(lo).min(hi)
 }
 

@@ -3,7 +3,7 @@
 
 use alloc::{borrow::Cow, boxed::Box, string::String, vec, vec::Vec};
 use core::cell::RefCell;
-use hls::{Hls, Knob};
+use hls::Hls;
 use player::plugins::{AbLoop, Keyboard, Loop, StartAt};
 use player::{Cmd, Event, Fact, Intent, Player};
 
@@ -78,7 +78,7 @@ pub extern "C" fn player_use(id: u32, plugin: u32, arg: f64) {
         2 => p.add(StartAt::new(arg)),
         3 => p.add(AbLoop::default()),
         4 => p.add(Hls::tuned(move |knob| {
-            let (name, value) = (knob.name(), knob_value(knob));
+            let (name, value) = (knob.name(), knob.target());
             // SAFETY: the host answers synchronously and does not call back into the core.
             let answer = unsafe { tune(id, name.as_ptr(), name.len(), value) };
             (!answer.is_nan()).then_some(answer)
@@ -87,26 +87,20 @@ pub extern "C" fn player_use(id: u32, plugin: u32, arg: f64) {
     });
 }
 
-/// The value a knob depends on for the host: a target duration, or nothing.
-fn knob_value(knob: Knob) -> f64 {
-    match knob {
-        Knob::Ahead(target) | Knob::Behind(target) | Knob::Holdback(target) => target,
-        Knob::Safety | Knob::Retries | Knob::LiveRetries => 0.0,
-    }
-}
-
 /// Returns how many commands the event produced, so the host knows if it was handled.
 #[unsafe(no_mangle)]
 pub extern "C" fn player_event(id: u32, code: u32, value: f64, data: *mut u8, len: usize) -> u32 {
     let Some(event) = decode(code, value, take(data, len)) else { return 0 };
     // Borrow ends before calling out, so the host may safely call back in.
-    let Some((cmds, v)) = with(id, |p| (p.dispatch(event), p.state.view())) else { return 0 };
-    unsafe {
-        for c in &cmds {
-            let (code, value, data) = encode(c);
-            cmd(id, code, value, data.as_ptr(), data.len());
-        }
-        render(id, v.playing, v.waiting, v.muted, v.progress, v.buffered, v.volume, v.label.as_ptr(), v.label.len());
+    let Some(cmds) = with(id, |p| p.dispatch(event)) else { return 0 };
+    for c in &cmds {
+        let (code, value, data) = encode(c);
+        unsafe { cmd(id, code, value, data.as_ptr(), data.len()) };
+    }
+    // Painted after the commands: one of them may have reported back (an event within this one), and the
+    // view must include it. Gone if a command destroyed the player.
+    if let Some(v) = with(id, |p| p.state.view()) {
+        unsafe { render(id, v.playing, v.waiting, v.muted, v.progress, v.buffered, v.volume, v.label.as_ptr(), v.label.len()) };
     }
     cmds.len() as u32
 }
