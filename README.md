@@ -11,6 +11,19 @@ cargo test            # every crate's tests, run natively
 python3 e2e/run.py    # real HLS and links through our server, in headless Firefox and Chrome
 ```
 
+The `justfile` wraps these (`just` lists the recipes). With only Docker installed:
+
+```sh
+just up          # server + demo media on http://127.0.0.1:8080, rebuilt from the sources
+just up-live     # the same, plus a live stream at /hls/live/live.m3u8
+just docker-e2e  # the e2e tests in a container with Firefox and Chrome (amd64)
+just down
+docker build --target ts2mp4 -t ts2mp4 . && docker run --rm -i ts2mp4 < seg.ts > seg.mp4
+```
+
+The `Dockerfile` compiles dependencies in their own layer (cargo-chef), so a source change only
+rebuilds our crates. Media made by the containers lands in `web/hls` and `web/media`, as natively.
+
 Design notes, measurements and the traps we hit: [docs/learnings/](docs/learnings/README.md).
 
 ## The page
