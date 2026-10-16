@@ -102,13 +102,16 @@ the `.m3u8` URL as `video.src`. Elsewhere (Firefox, older browsers) the Rust `Hl
 
 The JS side only downloads and calls Media Source; it does what the Rust side asks.
 
-Not supported yet: live streams, encryption (`#EXT-X-KEY`), fMP4 segments (`#EXT-X-MAP`),
+Not supported yet: encryption (`#EXT-X-KEY`), fMP4 segments (`#EXT-X-MAP`),
 separate audio renditions (`#EXT-X-MEDIA`), discontinuities, HEVC.
 
 ## Tests
 
 `cargo test` covers the core, the converter (a real ffmpeg-made TS file in `fixtures/`),
 playlists, and the HLS plugin's decisions with a fake host.
+
+`./make-live.sh [clip]` runs a live stream in `web/hls/live/` until you stop it (Ctrl-C). It is a sliding
+window with no `ENDLIST`, and stopping it ends the playlist, so it can also test the switch to VOD.
 
 `./make-hls.sh` makes the demo stream in `web/hls/`: the Sintel trailer, read straight from
 blender.org, as HLS with MPEG-TS segments in 240p, 360p and 480p. `e2e/run.py` (Python stdlib
