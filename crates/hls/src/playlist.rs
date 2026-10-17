@@ -1,4 +1,4 @@
-//! M3U8 playlists: just enough for VOD and live (variants, segments, durations, sequence numbers).
+//! M3U8 playlists: just enough for VOD and live (variants, segments, durations, sequence numbers, init sections).
 
 use alloc::{string::String, vec::Vec};
 
@@ -16,6 +16,23 @@ pub struct Segment {
     pub uri: String,
     /// `EXT-X-MEDIA-SEQUENCE` plus the index in the playlist. Stable across reloads of a live playlist.
     pub sequence: u64,
+    /// The init section to append before this segment (fMP4): the last `EXT-X-MAP` above it.
+    pub map: Option<Map>,
+}
+
+/// An `EXT-X-MAP`: where a segment's init section is.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Map {
+    pub uri: String,
+    /// `BYTERANGE`, when the init section is a slice of the file.
+    pub range: Option<ByteRange>,
+}
+
+/// A slice of a file, in bytes.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ByteRange {
+    pub length: u64,
+    pub offset: u64,
 }
 
 impl Segment {
@@ -74,12 +91,14 @@ pub fn variants(text: &str, base: &str) -> Vec<Variant> {
 /// A media playlist: its segments, numbered, and whether it has ended.
 pub fn media(text: &str, base: &str) -> Media {
     let mut out = Media { target_duration: 0.0, media_sequence: 0, ended: false, segments: Vec::new() };
-    let (mut start, mut duration) = (0.0, None);
+    let (mut start, mut duration, mut map) = (0.0, None, None);
     for line in text.lines().map(str::trim) {
         if let Some(value) = line.strip_prefix("#EXT-X-TARGETDURATION:") {
             out.target_duration = decimal(value);
         } else if let Some(value) = line.strip_prefix("#EXT-X-MEDIA-SEQUENCE:") {
             out.media_sequence = value.parse().unwrap_or(0);
+        } else if let Some(attrs) = line.strip_prefix("#EXT-X-MAP:") {
+            map = init_section(attrs, base);
         } else if line == "#EXT-X-ENDLIST" {
             out.ended = true;
         } else if let Some(info) = line.strip_prefix("#EXTINF:") {
@@ -89,11 +108,33 @@ pub fn media(text: &str, base: &str) -> Media {
         {
             // The spec puts EXT-X-MEDIA-SEQUENCE before the first segment, so it is known here.
             let sequence = out.media_sequence + out.segments.len() as u64;
-            out.segments.push(Segment { start, duration, uri: join(base, line), sequence });
+            out.segments.push(Segment { start, duration, uri: join(base, line), sequence, map: map.clone() });
             start += duration;
         }
     }
     out
+}
+
+/// An `EXT-X-MAP` from its attributes. None without a URI, or with a `BYTERANGE` that does not parse: then the
+/// segments after it get no init section.
+fn init_section(attrs: &str, base: &str) -> Option<Map> {
+    let uri = join(base, unquote(attr(attrs, "URI")?));
+    let range = match attr(attrs, "BYTERANGE") {
+        None => None,
+        // The offset is 0 when absent: nothing comes before an init section.
+        Some(range) => {
+            let (length, offset) = byte_range(unquote(range))?;
+            Some(ByteRange { length, offset: offset.unwrap_or(0) })
+        }
+    };
+    Some(Map { uri, range })
+}
+
+/// `length[@offset]`, as in `EXT-X-BYTERANGE` and a MAP's `BYTERANGE`. What a missing offset means depends on
+/// the tag, so it is left to the caller.
+fn byte_range(text: &str) -> Option<(u64, Option<u64>)> {
+    let (length, offset) = text.split_once('@').map_or((text, None), |(length, offset)| (length, Some(offset)));
+    Some((length.parse().ok()?, offset.map(str::parse).transpose().ok()?))
 }
 
 /// Moves a freshly parsed playlist onto the timeline of `previous` (the last one parsed for the same stream).
@@ -168,6 +209,11 @@ fn attr<'a>(attrs: &'a str, key: &str) -> Option<&'a str> {
             c == ',' && !quoted
         })
         .find_map(|pair| pair.strip_prefix(key)?.strip_prefix('='))
+}
+
+/// A quoted-string attribute value without its quotes.
+fn unquote(value: &str) -> &str {
+    value.strip_prefix('"').and_then(|v| v.strip_suffix('"')).unwrap_or(value)
 }
 
 /// Parses `10.000`. Hand-rolled: the float parser in `core` would double the wasm size.
