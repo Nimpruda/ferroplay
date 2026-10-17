@@ -6,7 +6,13 @@
 //! let fragment = ts2mp4::fragment(&media, sequence, offset);   // per segment
 //! ```
 //!
-//! Segments that are fMP4 already only need reading: `read_init` gives an init section's codecs and tracks.
+//! Segments that are fMP4 already only need reading and moving onto the playlist's timeline:
+//!
+//! ```text
+//! let init = ts2mp4::read_init(&init_section)?;                // codecs and tracks
+//! let offset = ts2mp4::offset(&init.tracks, &first, start)?;    // seconds, once, from the first segment
+//! ts2mp4::shift(&mut segment, &init.tracks, offset)?;           // per segment, with its own init's tracks
+//! ```
 
 #![no_std]
 extern crate alloc;
@@ -17,7 +23,7 @@ mod mp4;
 mod ts;
 
 use alloc::{string::String, vec::Vec};
-pub use fmp4::{Init, Track, read_init};
+pub use fmp4::{Init, Track, offset, read_init, shift};
 pub use mp4::{fragment, init};
 pub use ts::{Audio, Media, Sample, Video, demux};
 
