@@ -1,5 +1,6 @@
 //! MPEG-TS demuxer for the usual HLS payload: H.264 video and AAC (ADTS) audio.
 
+use crate::codec;
 use alloc::{string::String, vec::Vec};
 
 /// One segment's media. Timestamps are in 90 kHz units.
@@ -44,25 +45,12 @@ impl Media {
     pub fn mime(&self) -> String {
         let mut codecs = Vec::new();
         if let Some(v) = &self.video {
-            let mut c = String::from("avc1.");
-            for &b in &v.sps[1..4] {
-                for n in [b >> 4, b & 15] {
-                    c.push(char::from(b"0123456789abcdef"[usize::from(n)]));
-                }
-            }
-            codecs.push(c);
+            codecs.push(codec::avc1(&v.sps[1..4]));
         }
-        if let Some(a) = &self.audio {
-            let object = a.config[0] >> 3;
-            let mut c = String::from("mp4a.40.");
-            if object >= 10 {
-                c.push(char::from(b'0' + object / 10));
-            }
-            c.push(char::from(b'0' + object % 10));
-            codecs.push(c);
+        if let Some(object) = self.audio.as_ref().and_then(|a| codec::aac_object(&a.config)) {
+            codecs.push(codec::mp4a(object));
         }
-        let kind = if self.video.is_some() { "video" } else { "audio" };
-        [kind, "/mp4; codecs=\"", &codecs.join(","), "\""].concat()
+        codec::mime(&codecs)
     }
 }
 

@@ -5,14 +5,19 @@
 //! let init = ts2mp4::init(&media);                             // once per codec setup
 //! let fragment = ts2mp4::fragment(&media, sequence, offset);   // per segment
 //! ```
+//!
+//! Segments that are fMP4 already only need reading: `read_init` gives an init section's codecs and tracks.
 
 #![no_std]
 extern crate alloc;
 
+mod codec;
+mod fmp4;
 mod mp4;
 mod ts;
 
 use alloc::{string::String, vec::Vec};
+pub use fmp4::{Init, Track, read_init};
 pub use mp4::{fragment, init};
 pub use ts::{Audio, Media, Sample, Video, demux};
 
