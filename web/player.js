@@ -10,7 +10,7 @@ const PLUGINS = ['keyboard', 'loop', 'startAt', 'abLoop', 'hls'];
 // Tuning knobs, by name (the names are `Knob::name` in crates/hls). A knob's function gets the target
 // duration (seconds) or nothing; it returns the value, or nothing to keep the default. Names not listed here
 // throw when registered: a typo must not silently keep the default.
-const KNOBS = ['ahead', 'behind', 'holdback', 'safety', 'retries', 'liveRetries'];
+const KNOBS = ['ahead', 'behind', 'holdback', 'safety', 'retries', 'liveRetries', 'initRetries'];
 const ARROWS = { ArrowLeft: '←', ArrowUp: '↑', ArrowRight: '→', ArrowDown: '↓' };
 
 const icon = (cls, d) => `<svg class="${cls}" viewBox="0 0 24 24"><path d="${d}"/></svg>`;

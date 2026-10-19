@@ -83,9 +83,10 @@ export function hls({ video, send, use, handle, seekable }) {
 }
 
 // `hls` with tuned values. Each knob is a function returning its value: `ahead`, `behind` and `holdback`
-// get the target duration (seconds) and return seconds; `safety` (share of bandwidth) and `retries` get
+// get the target duration (seconds) and return seconds; `safety` (share of bandwidth) and the retries get
 // nothing. A knob left out keeps its default: 30 s ahead and behind, a hold-back of three target durations,
-// 0.8 of the bandwidth, and 3 retries (10 for a live stream, `liveRetries`).
+// 0.8 of the bandwidth, and retries after a failure before giving up: 3 (`retries`), 10 for a live stream
+// (`liveRetries`), and 0 after an init section this player cannot play (`initRetries`).
 export const hlsWith = knobs => api => {
   for (const [name, knob] of Object.entries(knobs)) api.tune(name, knob);
   return hls(api);

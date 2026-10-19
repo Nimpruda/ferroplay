@@ -1,8 +1,9 @@
-//! HLS playback (VOD, MPEG-TS segments) as a player plugin.
+//! HLS playback (VOD and live, MPEG-TS or fMP4 segments) as a player plugin.
 //!
 //! It takes over `Intent::Load` for `.m3u8` URLs. Then it asks the host to download playlists
-//! and segments (`Cmd::Fetch`), converts each segment to fragmented MP4 (`ts2mp4`), and feeds
-//! it to a Media Source (`Cmd::Open`, `Cmd::Append`). Quality follows the download speed.
+//! and segments (`Cmd::Fetch`), converts MPEG-TS segments to fragmented MP4 (`ts2mp4`) or moves fMP4
+//! ones onto the playlist's timeline, and feeds them to a Media Source (`Cmd::Open`, `Cmd::Append`).
+//! Quality follows the download speed.
 //! Live playlists (no `ENDLIST`) are reloaded as they grow. Assumes segments aligned across qualities, no encryption.
 
 #![no_std]
@@ -12,17 +13,18 @@ pub mod playlist;
 
 use alloc::{boxed::Box, string::String, vec::Vec};
 use player::{Cmd, Event, Fact, Intent, Plugin, State};
-use playlist::{Segment, Variant};
+use playlist::{Map, Segment, Variant};
+use ts2mp4::Track;
 
 /// Seconds of media to keep loaded ahead of the playhead, and behind it.
 const AHEAD: f64 = 30.0;
 const BEHIND: f64 = 30.0;
 /// Pick qualities using at most this share of the measured bandwidth.
 const SAFETY: f64 = 0.8;
-/// Consecutive failed downloads before giving up.
+/// Retries after a failure, before giving up: on a stream that ends, a live one, and after an unplayable init section.
 const RETRIES: f64 = 3.0;
-/// Consecutive failed downloads before giving up on a live stream.
 const LIVE_RETRIES: f64 = 10.0;
+const INIT_RETRIES: f64 = 0.0;
 /// `EXT-X-TARGETDURATION` when a playlist has none.
 const DEFAULT_TARGET: f64 = 6.0;
 
@@ -37,11 +39,15 @@ pub enum Knob {
     Holdback(f64),
     /// The share of the measured bandwidth a quality may use (default 0.8).
     Safety,
-    /// Consecutive failed downloads before giving up on a stream that ends (default 3).
+    /// Retries after a failed download, or a playlist or segment that cannot be used, before giving up on a
+    /// stream that ends (default 3).
     Retries,
-    /// Consecutive failed downloads before giving up on a live stream (default 10): its reloads come every
-    /// target duration, so a few failures in a row are a short outage, not the end.
+    /// The same for a live stream (default 10): its reloads come every target duration, so a few failures in a
+    /// row are a short outage, not the end.
     LiveRetries,
+    /// Retries after an init section this player cannot play (another codec, a byte-range `EXT-X-MAP`) before
+    /// giving up (default 0: at once, as every segment after it needs it).
+    InitRetries,
 }
 
 impl Knob {
@@ -54,6 +60,7 @@ impl Knob {
             Knob::Safety => "safety",
             Knob::Retries => "retries",
             Knob::LiveRetries => "liveRetries",
+            Knob::InitRetries => "initRetries",
         }
     }
 
@@ -61,7 +68,7 @@ impl Knob {
     pub fn target(self) -> f64 {
         match self {
             Knob::Ahead(target) | Knob::Behind(target) | Knob::Holdback(target) => target,
-            Knob::Safety | Knob::Retries | Knob::LiveRetries => 0.0,
+            Knob::Safety | Knob::Retries | Knob::LiveRetries | Knob::InitRetries => 0.0,
         }
     }
 }
@@ -101,13 +108,15 @@ pub struct Hls {
     pending: Option<Request>,
     /// The URL of the download in flight, or of the last one.
     fetching: String,
-    failures: u32,
+    retry: Retry,
     /// Download speed, bits per second; 0 until the first segment.
     bandwidth: f64,
-    /// Shifts 90 kHz media timestamps onto the playlist's timeline.
-    offset: Option<i64>,
+    /// Seconds that move the stream's own timestamps onto the playlist's timeline, from its first segment.
+    offset: Option<f64>,
     /// The last init segment appended; a new one is needed when the quality changes.
     init: Vec<u8>,
+    /// The `EXT-X-MAP` of that init segment and its tracks, when it came from the stream (fMP4).
+    map: Option<(Map, Vec<Track>)>,
 }
 
 #[derive(Clone, Copy)]
@@ -118,6 +127,43 @@ enum Request {
     Reload(usize, f64),
     /// A variant and the sequence number of its segment.
     Segment(usize, u64),
+    /// The init section (`EXT-X-MAP`) of that segment, before it.
+    Init(usize, u64),
+}
+
+/// Why a download could not be used. Its kind decides how many in a row a stream survives (`Hls::retries`).
+enum Failure {
+    /// The download failed (network, HTTP status); the host has said so already.
+    Download(String),
+    /// A playlist or segment that cannot be used; the next one may be fine.
+    Unusable(String),
+    /// An init section this player cannot play: the segments that need it are lost too.
+    Unplayable(String),
+}
+
+/// Failures in a row, and whether the stream has given up on them. With `Failure`, what a give-up policy shared
+/// with other streaming plugins can take over: the plugin only says how many retries a failure gets.
+#[derive(Default)]
+struct Retry {
+    failures: u32,
+    gave_up: bool,
+}
+
+impl Retry {
+    /// Counts a failure; true if the stream gives up on it, being one more than `retries` in a row. Nothing is
+    /// counted after that, so it is said once.
+    fn fail(&mut self, retries: f64) -> bool {
+        if self.gave_up {
+            return false;
+        }
+        self.failures += 1;
+        self.gave_up = self.failures as f64 > retries;
+        self.gave_up
+    }
+
+    fn succeed(&mut self) {
+        self.failures = 0;
+    }
 }
 
 impl Hls {
@@ -134,12 +180,12 @@ impl Hls {
         value
     }
 
-    /// Consecutive failures before giving up: the live stream's limit while live, the stream's otherwise.
-    fn retry_limit(&self) -> f64 {
-        if self.live {
-            self.knob(Knob::LiveRetries, LIVE_RETRIES)
-        } else {
-            self.knob(Knob::Retries, RETRIES)
+    /// The retries a stream gets after a failure of this kind, from the knobs: the one place they are read for it.
+    fn retries(&self, failure: &Failure) -> f64 {
+        match failure {
+            Failure::Unplayable(_) => self.knob(Knob::InitRetries, INIT_RETRIES),
+            _ if self.live => self.knob(Knob::LiveRetries, LIVE_RETRIES),
+            _ => self.knob(Knob::Retries, RETRIES),
         }
     }
 
@@ -163,8 +209,8 @@ impl Hls {
         self.appended.iter().any(|&(s, _)| s == sequence)
     }
 
-    /// Handles a finished download; why it is unusable, if it is.
-    fn receive(&mut self, request: Request, ms: f64, data: &[u8], out: &mut Vec<Cmd>) -> Result<(), String> {
+    /// Handles a finished download; why it cannot be used, if it cannot.
+    fn receive(&mut self, request: Request, ms: f64, data: &[u8], out: &mut Vec<Cmd>) -> Result<(), Failure> {
         let text = core::str::from_utf8(data).unwrap_or_default();
         match request {
             Request::Master => {
@@ -180,7 +226,7 @@ impl Hls {
                 let (live, target, mut segments) = (media.live(), media.target_duration, media.segments);
                 if segments.is_empty() {
                     // e.g. an error page: counts as a failed download
-                    return Err([&self.fetching, " lists no segments: not a media playlist"].concat());
+                    return Err(Failure::Unusable([&self.fetching, " lists no segments: not a media playlist"].concat()));
                 }
                 self.unchanged = self.variants[v].segments.last().map(|s| s.sequence) == segments.last().map(|s| s.sequence);
                 // Times follow the playlist that arrived last, of whichever variant: they share sequence numbers.
@@ -219,35 +265,67 @@ impl Hls {
                     0.7 * self.bandwidth + 0.3 * sample
                 };
                 let Some(segment) = self.variants[v].segment(sequence) else { return Ok(()) };
-                let (start, end) = (segment.start, segment.end());
+                let (start, end, fmp4) = (segment.start, segment.end(), segment.map.is_some());
                 self.appended.push((sequence, end)); // even if unusable: skip a broken segment rather than retry it forever
-                let media = ts2mp4::demux(data);
-                let Some(pts) = media.start() else {
-                    return Err(["segment ", &self.fetching, " holds no MPEG-TS media this player can play"].concat());
-                };
-                let offset = *self.offset.get_or_insert((start * 90_000.0) as i64 - pts);
-                let init = ts2mp4::init(&media);
-                if init != self.init {
-                    out.push(Cmd::Codec(media.mime()));
-                    out.push(Cmd::Append(init.clone()));
-                    self.init = init;
-                }
-                // The fragment number only has to grow; it wraps rather than overflow on huge sequence numbers.
-                out.push(Cmd::Append(ts2mp4::fragment(&media, (sequence as u32).wrapping_add(1), offset)));
+                let fragment = if fmp4 { self.fmp4_fragment(data, start) } else { self.ts_fragment(data, start, sequence, out) };
+                let fragment = fragment.map_err(|why| Failure::Unusable(["segment ", &self.fetching, ": ", &why].concat()))?;
+                out.push(Cmd::Append(fragment));
+            }
+            Request::Init(v, sequence) => {
+                let Some(map) = self.variants[v].segment(sequence).and_then(|s| s.map.clone()) else { return Ok(()) };
+                let init = ts2mp4::read_init(data).map_err(|why| Failure::Unplayable([&self.fetching, ": ", &why].concat()))?;
+                self.use_init(init.mime, data, out);
+                self.map = Some((map, init.tracks));
             }
         }
         Ok(())
     }
 
-    /// Counts a failed download, and gives up once there are too many in a row, saying why: once, as nothing is
-    /// counted past the limit. Messages are concatenated, not `format!`ted: `core::fmt` adds 4 KB to the wasm.
-    fn failed(&mut self, reason: String, out: &mut Vec<Cmd>) {
-        let limit = self.retry_limit();
-        if (self.failures as f64) < limit {
-            self.failures += 1;
-            if self.failures as f64 >= limit {
-                out.push(Cmd::Fail(["HLS: giving up after too many failures in a row; the last: ", &reason].concat()));
-            }
+    /// An MPEG-TS segment as an fMP4 fragment on the playlist's timeline, after the init segment for it if that
+    /// changed.
+    fn ts_fragment(&mut self, data: &[u8], start: f64, sequence: u64, out: &mut Vec<Cmd>) -> Result<Vec<u8>, String> {
+        let media = ts2mp4::demux(data);
+        let pts = media.start().ok_or("no MPEG-TS media this player can play")?;
+        let offset = *self.offset.get_or_insert(start - pts as f64 / 90_000.0);
+        self.use_init(media.mime(), &ts2mp4::init(&media), out);
+        self.map = None;
+        // The fragment number only has to grow; it wraps rather than overflow on huge sequence numbers.
+        Ok(ts2mp4::fragment(&media, (sequence as u32).wrapping_add(1), (offset * 90_000.0) as i64))
+    }
+
+    /// An fMP4 segment as it is, moved onto the playlist's timeline. Its init section is in already: `next`
+    /// fetches it first.
+    fn fmp4_fragment(&mut self, data: &[u8], start: f64) -> Result<Vec<u8>, String> {
+        let tracks = self.map.as_ref().map_or(&[][..], |(_, tracks)| tracks);
+        let mut data = data.to_vec();
+        let offset = match self.offset {
+            Some(offset) => offset,
+            None => ts2mp4::offset(tracks, &data, start)?,
+        };
+        ts2mp4::shift(&mut data, tracks, offset)?;
+        self.offset = Some(offset);
+        Ok(data)
+    }
+
+    /// Appends an init segment, with its MIME type, unless it is the one in the Media Source already.
+    fn use_init(&mut self, mime: String, init: &[u8], out: &mut Vec<Cmd>) {
+        if init != self.init {
+            out.push(Cmd::Codec(mime));
+            out.push(Cmd::Append(init.to_vec()));
+            self.init = init.to_vec();
+        }
+    }
+
+    /// Says what failed (not a failed download: the host has said so already) and counts it, giving up when
+    /// there are more in a row than its kind's retries. Messages are concatenated, not `format!`ted: `core::fmt`
+    /// adds 4 KB to the wasm.
+    fn failed(&mut self, failure: Failure, out: &mut Vec<Cmd>) {
+        let (Failure::Download(reason) | Failure::Unusable(reason) | Failure::Unplayable(reason)) = &failure;
+        if !matches!(failure, Failure::Download(_)) {
+            out.push(Cmd::Warn(reason.clone()));
+        }
+        if self.retry.fail(self.retries(&failure)) {
+            out.push(Cmd::Fail(["HLS: giving up: ", reason].concat()));
         }
     }
 
@@ -273,7 +351,15 @@ impl Hls {
         // Segments the buffer wants go first; a live playlist is reloaded when nothing else is left.
         if let Some(s) = self.needed(v, time) {
             let (sequence, uri) = (s.sequence, s.uri.clone());
-            return self.fetch(Request::Segment(v, sequence), uri, 0.0, out);
+            // An fMP4 segment needs its init section in the Media Source first.
+            let Some(map) = s.map.as_ref().filter(|&map| self.map.as_ref().map(|(m, _)| m) != Some(map)).cloned() else {
+                return self.fetch(Request::Segment(v, sequence), uri, 0.0, out);
+            };
+            if map.range.is_some() {
+                let reason = [&map.uri, " is a byte range (EXT-X-MAP BYTERANGE), which this player cannot fetch yet"].concat();
+                return self.failed(Failure::Unplayable(reason), out);
+            }
+            return self.fetch(Request::Init(v, sequence), map.uri, 0.0, out);
         }
         if self.live {
             self.reload(v, out);
@@ -300,7 +386,7 @@ impl Hls {
     fn reconcile(&mut self, time: f64) {
         let drop = match self.pending {
             Some(Request::Reload(..)) => self.needed(self.pick(), time).is_some(),
-            Some(Request::Segment(v, sequence)) => !self.wanted(v, sequence, time),
+            Some(Request::Segment(v, sequence) | Request::Init(v, sequence)) => !self.wanted(v, sequence, time),
             _ => false,
         };
         if drop {
@@ -364,11 +450,8 @@ impl Plugin for Hls {
                 if let Some(request) = self.finish() {
                     self.elapsed += *ms / 1000.0;
                     match self.receive(request, *ms, data, &mut cmds) {
-                        Ok(()) => self.failures = 0,
-                        Err(reason) => {
-                            cmds.push(Cmd::Warn(reason.clone()));
-                            self.failed(reason, &mut cmds);
-                        }
+                        Ok(()) => self.retry.succeed(),
+                        Err(failure) => self.failed(failure, &mut cmds),
                     }
                 }
             }
@@ -379,7 +462,7 @@ impl Plugin for Hls {
                     if let Request::Reload(..) = request {
                         (self.reloaded, self.unchanged) = (self.elapsed, true);
                     }
-                    self.failed(["the download of ", &self.fetching, " failed"].concat(), &mut cmds);
+                    self.failed(Failure::Download(["the download of ", &self.fetching, " failed"].concat()), &mut cmds);
                 }
             }
             _ => {}
@@ -387,7 +470,7 @@ impl Plugin for Hls {
         // Until the element reports its position, downloads go from the hold-back (set by a playlist just now).
         let time = self.start_at.unwrap_or(state.time);
         self.reconcile(time);
-        if !self.url.is_empty() && self.pending.is_none() && (self.failures as f64) < self.retry_limit() {
+        if !self.url.is_empty() && self.pending.is_none() && !self.retry.gave_up {
             self.next(time, &mut cmds);
         }
         // The end: once the last segment of the playlist being played is in, after the playlist says so, and

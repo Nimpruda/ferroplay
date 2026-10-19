@@ -225,8 +225,8 @@ def unusable(url):
         shown = until(b, "document.querySelector('.vp').dataset.error", 15)
         error = b.js("document.querySelector('.vp').dataset.error")
         check('chrome: unusable segments stop playback and say why on the player',
-              shown and 'holds no MPEG-TS media' in error, error)
-        warnings = [log for log in b.logs if 'holds no MPEG-TS media' in log]
+              shown and 'no MPEG-TS media' in error, error)
+        warnings = [log for log in b.logs if 'no MPEG-TS media' in log]
         check('chrome: each unusable segment is warned about in the console', len(warnings) >= 3, b.logs)
     finally:
         b.close()

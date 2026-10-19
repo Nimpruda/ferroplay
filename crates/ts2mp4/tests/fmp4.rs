@@ -48,12 +48,9 @@ fn truncated_data_is_an_error_not_a_panic() {
 
 #[test]
 fn a_codec_it_cannot_play_is_named() {
-    // The video sample entry is the last "avc1" before its avcC (the ftyp may list avc1 as a brand too).
-    let avcc = INIT.windows(4).position(|w| w == b"avcC").unwrap();
-    let entry = INIT[..avcc].windows(4).rposition(|w| w == b"avc1").unwrap();
-    let mut hevc = INIT.to_vec();
-    hevc[entry..entry + 4].copy_from_slice(b"hvc1");
-    assert_eq!(read_init(&hevc).err().unwrap(), "init section: hvc1 is a codec this player cannot play");
+    // The fixture's video sample entry renamed hvc1.
+    let hevc = include_bytes!("../../../fixtures/fmp4-hevc-init.mp4");
+    assert_eq!(read_init(hevc).err().unwrap(), "init section: hvc1 is a codec this player cannot play");
 }
 
 #[test]

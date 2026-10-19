@@ -119,20 +119,22 @@ fn an_error_page_instead_of_a_playlist_is_a_failed_download() {
     let mut p = playing("https://cdn.test/x.m3u8");
     let page = loaded(b"<html>404</html>");
     let warning = Cmd::Warn("https://cdn.test/x.m3u8 lists no segments: not a media playlist".into());
-    assert_eq!(p.dispatch(page.clone()), [warning.clone(), fetch("https://cdn.test/x.m3u8")]);
-    assert_eq!(p.dispatch(page.clone()), [warning.clone(), fetch("https://cdn.test/x.m3u8")]);
+    for _ in 0..3 {
+        assert_eq!(p.dispatch(page.clone()), [warning.clone(), fetch("https://cdn.test/x.m3u8")]);
+    }
     let cmds = p.dispatch(page);
     assert_eq!(cmds[0], warning);
     assert!(fails_with(&cmds, "x.m3u8 lists no segments"), "gives up instead of asking forever: {cmds:?}");
 }
 
 #[test]
-fn gives_up_after_three_failed_downloads() {
+fn gives_up_after_three_retries() {
     let mut p = playing("https://cdn.test/x.m3u8");
-    assert_eq!(p.dispatch(Event::Saw(Fact::LoadFailed)), [fetch("https://cdn.test/x.m3u8")]);
-    assert_eq!(p.dispatch(Event::Saw(Fact::LoadFailed)), [fetch("https://cdn.test/x.m3u8")]);
+    for _ in 0..3 {
+        assert_eq!(p.dispatch(Event::Saw(Fact::LoadFailed)), [fetch("https://cdn.test/x.m3u8")]);
+    }
     let cmds = p.dispatch(Event::Saw(Fact::LoadFailed));
-    assert!(fails_with(&cmds, "giving up after too many failures in a row; the last: the download of https://cdn.test/x.m3u8 failed"), "{cmds:?}");
+    assert_eq!(cmds, [Cmd::Fail("HLS: giving up: the download of https://cdn.test/x.m3u8 failed".into())]);
     assert_eq!(p.dispatch(Event::Saw(Fact::Time(1.0))), [], "said once");
 }
 
@@ -142,7 +144,7 @@ fn an_unusable_segment_is_said_and_skipped() {
     p.dispatch(loaded(window("s", 0, 10, 2.0).as_bytes()));
     assert_eq!(
         p.dispatch(loaded(NOT_TS)),
-        [Cmd::Warn("segment https://cdn.test/s0.ts holds no MPEG-TS media this player can play".into()), fetch("https://cdn.test/s1.ts")]
+        [Cmd::Warn("segment https://cdn.test/s0.ts: no MPEG-TS media this player can play".into()), fetch("https://cdn.test/s1.ts")]
     );
 }
 
@@ -150,11 +152,12 @@ fn an_unusable_segment_is_said_and_skipped() {
 fn unusable_segments_in_a_row_fail_the_stream_once() {
     let mut p = playing("https://cdn.test/movie.m3u8");
     p.dispatch(loaded(window("s", 0, 10, 2.0).as_bytes()));
-    p.dispatch(loaded(NOT_TS));
-    p.dispatch(loaded(NOT_TS));
+    for _ in 0..3 {
+        p.dispatch(loaded(NOT_TS));
+    }
     let cmds = p.dispatch(loaded(NOT_TS));
     assert!(matches!(&cmds[..], [Cmd::Warn(_), Cmd::Fail(_)]), "{cmds:?}");
-    assert!(fails_with(&cmds, "the last: segment https://cdn.test/s2.ts holds no MPEG-TS media"), "{cmds:?}");
+    assert!(fails_with(&cmds, "giving up: segment https://cdn.test/s3.ts: no MPEG-TS media"), "{cmds:?}");
     assert_eq!(p.dispatch(Event::Saw(Fact::Time(1.0))), [], "said once, and nothing more is downloaded");
 }
 
@@ -162,7 +165,7 @@ fn unusable_segments_in_a_row_fail_the_stream_once() {
 fn a_usable_segment_resets_the_count_of_unusable_ones() {
     let mut p = playing("https://cdn.test/movie.m3u8");
     p.dispatch(loaded(window("s", 0, 10, 2.0).as_bytes()));
-    for data in [NOT_TS, NOT_TS, SAMPLE, NOT_TS, NOT_TS] {
+    for data in [NOT_TS, NOT_TS, NOT_TS, SAMPLE, NOT_TS, NOT_TS, NOT_TS] {
         let cmds = p.dispatch(loaded(data));
         assert!(matches!(cmds.last(), Some(Cmd::Fetch(..))), "{cmds:?}");
     }
@@ -172,10 +175,10 @@ fn a_usable_segment_resets_the_count_of_unusable_ones() {
 fn a_live_stream_fails_after_its_live_limit_of_unusable_segments() {
     let mut p = playing(LIVE);
     p.dispatch(loaded(live_window("s", 0, 12, 2.0).as_bytes()));
-    for unusable in 1..=9 {
+    for unusable in 1..=10 {
         assert!(matches!(p.dispatch(loaded(NOT_TS)).last(), Some(Cmd::Fetch(..))), "unusable segment {unusable} should go on");
     }
-    assert!(fails_with(&p.dispatch(loaded(NOT_TS)), "the last: segment https://cdn.test/s9.ts"), "the tenth gives up");
+    assert!(fails_with(&p.dispatch(loaded(NOT_TS)), "giving up: segment https://cdn.test/s10.ts"), "the eleventh gives up");
 }
 
 #[test]
@@ -366,19 +369,21 @@ fn a_tuned_value_that_makes_no_sense_is_not_hidden() {
 fn a_live_stream_keeps_trying_until_its_live_limit() {
     let mut p = playing(LIVE);
     p.dispatch(loaded(live_window("s", 0, 3, 2.0).as_bytes()));
-    // Nine failures in a row are still retried; the tenth gives up (the default live limit is 10).
-    for failure in 1..=9 {
+    // Ten failures in a row are retried (the default live retries); the eleventh gives up.
+    for failure in 1..=10 {
         assert!(!p.dispatch(Event::Saw(Fact::LoadFailed)).is_empty(), "failure {failure} should retry");
     }
-    assert!(fails_with(&p.dispatch(Event::Saw(Fact::LoadFailed)), "the last: the download of"), "the tenth gives up");
+    assert!(fails_with(&p.dispatch(Event::Saw(Fact::LoadFailed)), "giving up: the download of"), "the eleventh gives up");
 }
 
 #[test]
 fn a_tuned_live_limit_changes_when_a_live_stream_gives_up() {
     let mut p = playing_with(LIVE, Hls::tuned(|knob| matches!(knob, Knob::LiveRetries).then_some(2.0)));
     p.dispatch(loaded(live_window("s", 0, 3, 2.0).as_bytes()));
-    assert!(!p.dispatch(Event::Saw(Fact::LoadFailed)).is_empty());
-    assert!(fails_with(&p.dispatch(Event::Saw(Fact::LoadFailed)), "the last: the download of"));
+    for _ in 0..2 {
+        assert!(!p.dispatch(Event::Saw(Fact::LoadFailed)).is_empty());
+    }
+    assert!(fails_with(&p.dispatch(Event::Saw(Fact::LoadFailed)), "giving up: the download of"));
 }
 
 /// A live master: low first, then a fast download switches to high, whose two next segments load. A reload
@@ -451,4 +456,90 @@ fn a_huge_sequence_number_does_not_overflow() {
     let mut p = playing(LIVE);
     p.dispatch(loaded(live_window("s", u32::MAX as u64, 3, 2.0).as_bytes()));
     assert!(matches!(p.dispatch(loaded(SAMPLE)).last(), Some(Cmd::Fetch(..))));
+}
+
+/// ffmpeg's fMP4 version of fixtures/sample.ts: the init section, then two 1 s segments (stream times 0 and 1 s).
+const INIT: &[u8] = include_bytes!("../../../fixtures/fmp4-init.mp4");
+const SEGMENT_0: &[u8] = include_bytes!("../../../fixtures/fmp4-0.m4s");
+const SEGMENT_1: &[u8] = include_bytes!("../../../fixtures/fmp4-1.m4s");
+const FMP4_MIME: &str = "video/mp4; codecs=\"avc1.64000b,mp4a.40.2\"";
+
+/// The init section with its H.264 sample entry renamed hvc1: a codec this player cannot play.
+const HEVC_INIT: &[u8] = include_bytes!("../../../fixtures/fmp4-hevc-init.mp4");
+
+/// Like `window`, with 1 s fMP4 segments `{name}{sequence}.m4s` after `#EXT-X-MAP` `{name}init.mp4` (and `map` attributes).
+fn fmp4_window(name: &str, count: u64, map: &str) -> String {
+    let segments = window(name, 0, count, 1.0).replace(".ts\n", ".m4s\n");
+    segments.replacen("#EXTM3U\n", &format!("#EXTM3U\n#EXT-X-MAP:URI=\"{name}init.mp4\"{map}\n"), 1)
+}
+
+#[test]
+fn fmp4_segments_are_appended_after_their_init_section() {
+    let mut p = playing("https://cdn.test/f.m3u8");
+    assert_eq!(p.dispatch(loaded(fmp4_window("", 3, "").as_bytes())), [Cmd::Open(3.0), fetch("https://cdn.test/init.mp4")]);
+    assert_eq!(
+        p.dispatch(loaded(INIT)),
+        [Cmd::Codec(FMP4_MIME.into()), Cmd::Append(INIT.to_vec()), fetch("https://cdn.test/0.m4s")]
+    );
+    // The stream's own times start at 1 s here: the segment is moved to its playlist time, 0, and sent as it is
+    // otherwise (no conversion). The init section is in: the next download is the next segment.
+    let cmds = p.dispatch(loaded(SEGMENT_1));
+    let [Cmd::Append(data), next] = &cmds[..] else { panic!("{cmds:?}") };
+    assert_eq!(next, &fetch("https://cdn.test/1.m4s"));
+    assert_eq!(data.len(), SEGMENT_1.len());
+    let tracks = ts2mp4::read_init(INIT).unwrap().tracks;
+    assert_eq!(ts2mp4::offset(&tracks, data, 0.0).unwrap(), 0.0, "the earliest track starts at 0");
+}
+
+#[test]
+fn a_quality_switch_fetches_the_new_init_section_and_appends_it_only_if_it_differs() {
+    let mut p = playing("https://cdn.test/v/master.m3u8");
+    p.dispatch(loaded(MASTER.as_bytes()));
+    assert_eq!(p.dispatch(loaded(fmp4_window("low", 3, "").as_bytes())), [Cmd::Open(3.0), fetch("https://cdn.test/v/lowinit.mp4")]);
+    p.dispatch(loaded(INIT));
+    // A fast download: up to high, whose playlist names its own init section.
+    assert_eq!(p.dispatch(loaded(SEGMENT_0)).last(), Some(&fetch("https://cdn.test/v/high.m3u8")));
+    assert_eq!(p.dispatch(loaded(fmp4_window("high", 3, "").as_bytes())), [fetch("https://cdn.test/v/highinit.mp4")]);
+    // The same bytes as the init section in the Media Source: nothing to append, on to the segment.
+    assert_eq!(p.dispatch(loaded(INIT)), [fetch("https://cdn.test/v/high1.m4s")]);
+}
+
+#[test]
+fn an_unplayable_init_section_fails_the_stream_at_once() {
+    let mut p = playing("https://cdn.test/f.m3u8");
+    p.dispatch(loaded(fmp4_window("", 3, "").as_bytes()));
+    let reason = "https://cdn.test/init.mp4: init section: hvc1 is a codec this player cannot play";
+    assert_eq!(p.dispatch(loaded(HEVC_INIT)), [Cmd::Warn(reason.into()), Cmd::Fail(["HLS: giving up: ", reason].concat())]);
+    assert_eq!(p.dispatch(Event::Saw(Fact::Time(1.0))), [], "nothing more is downloaded");
+}
+
+#[test]
+fn tuned_init_retries_try_the_init_section_again() {
+    let mut p = playing_with("https://cdn.test/f.m3u8", Hls::tuned(|knob| matches!(knob, Knob::InitRetries).then_some(2.0)));
+    p.dispatch(loaded(fmp4_window("", 3, "").as_bytes()));
+    for _ in 0..2 {
+        assert!(matches!(&p.dispatch(loaded(HEVC_INIT))[..], [Cmd::Warn(_), Cmd::Fetch(url, _)] if url.ends_with("init.mp4")));
+    }
+    assert!(matches!(&p.dispatch(loaded(HEVC_INIT))[..], [Cmd::Warn(_), Cmd::Fail(_)]));
+}
+
+#[test]
+fn a_byte_range_init_section_fails_without_being_fetched() {
+    let mut p = playing("https://cdn.test/f.m3u8");
+    let reason = "https://cdn.test/init.mp4 is a byte range (EXT-X-MAP BYTERANGE), which this player cannot fetch yet";
+    assert_eq!(
+        p.dispatch(loaded(fmp4_window("", 3, ",BYTERANGE=\"720@0\"").as_bytes())),
+        [Cmd::Open(3.0), Cmd::Warn(reason.into()), Cmd::Fail(["HLS: giving up: ", reason].concat())]
+    );
+}
+
+#[test]
+fn an_fmp4_segment_that_goes_back_in_time_is_unusable() {
+    // The first segment sets the offset (its stream time 1 s at 0 s); one at stream time 0 would land before 0.
+    let mut p = playing("https://cdn.test/f.m3u8");
+    p.dispatch(loaded(fmp4_window("", 3, "").as_bytes()));
+    p.dispatch(loaded(INIT));
+    p.dispatch(loaded(SEGMENT_1));
+    let reason = "segment https://cdn.test/1.m4s: media segment: a decode time before the start of the stream";
+    assert_eq!(p.dispatch(loaded(SEGMENT_0)), [Cmd::Warn(reason.into()), fetch("https://cdn.test/2.m4s")]);
 }
