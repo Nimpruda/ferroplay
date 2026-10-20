@@ -31,7 +31,8 @@ impl State {
             waiting: self.waiting,
             muted: self.muted,
             progress: frac(self.time),
-            buffered: frac(self.buffered),
+            // The end of the range under the playhead: what can play from here.
+            buffered: frac(self.buffered.end_at(self.time).unwrap_or(0.0)),
             volume: if self.muted { 0.0 } else { self.volume },
             label,
         }

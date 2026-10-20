@@ -5,7 +5,7 @@ use alloc::{borrow::Cow, boxed::Box, string::String, vec, vec::Vec};
 use core::cell::RefCell;
 use hls::Hls;
 use player::plugins::{AbLoop, Keyboard, Loop, StartAt};
-use player::{Cmd, Event, Fact, Intent, Player};
+use player::{Cmd, Event, Fact, Intent, Player, Ranges};
 
 #[global_allocator]
 static ALLOC: dlmalloc::GlobalDlmalloc = dlmalloc::GlobalDlmalloc;
@@ -122,7 +122,7 @@ fn decode(code: u32, v: f64, data: Vec<u8>) -> Option<Event> {
         11 => Key(char::from_u32(v as u32)?),
         12 => Saw(F::Time(v)),
         13 => Saw(F::Duration(v)),
-        14 => Saw(F::Buffered(v)),
+        14 => Saw(F::Buffered(Ranges::from_le_bytes(&data)?)),
         15 => Saw(F::Playing),
         16 => Saw(F::Paused),
         17 => Saw(F::Ended),

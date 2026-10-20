@@ -40,6 +40,12 @@ const lookup = (table, name) => {
   return i;
 };
 const settle = promise => promise?.catch(() => {});
+// Numbers as 8 little-endian bytes each, read as `f64::from_le_bytes` in Rust.
+const toBytes = numbers => {
+  const bytes = new DataView(new ArrayBuffer(8 * numbers.length));
+  numbers.forEach((x, i) => bytes.setFloat64(8 * i, x, true));
+  return new Uint8Array(bytes.buffer);
+};
 
 // Bytes into wasm: Rust allocates, JS fills, Rust takes them back with the call.
 const pass = bytes => {
@@ -163,17 +169,19 @@ export function player(video, plugins = { keyboard: 5 }) {
   });
 
   // media -> core
+  // Every buffered range, sent only when they changed. Media Source may not fire `progress`, so this also runs
+  // on `timeupdate`.
+  let lastBuffered = [];
   const buffered = () => {
-    // End of the buffered range under the playhead. Media Source may not fire `progress`, so
-    // this also runs on `timeupdate`.
-    const { buffered: b, currentTime: t } = video;
-    let end = 0;
-    for (let i = 0; i < b.length; i++) if (b.start(i) <= t) end = b.end(i);
-    send('buffered', end);
+    const b = video.buffered;
+    const pairs = [];
+    for (let i = 0; i < b.length; i++) pairs.push(b.start(i), b.end(i));
+    if (pairs.length === lastBuffered.length && pairs.every((x, i) => x === lastBuffered[i])) return;
+    send('buffered', 0, toBytes(lastBuffered = pairs));
   };
   // The seekable range, for any source (a live stream's window, native HLS included). Media Source fires no
   // event when it changes, so it is read on the media events below, and sent only when it moved. The end
-  // travels as 8 little-endian bytes, the same as `f64::from_le_bytes` in Rust.
+  // travels in the bytes.
   let lastSeekable;
   const seekable = () => {
     const r = video.seekable;
@@ -181,16 +189,14 @@ export function player(video, plugins = { keyboard: 5 }) {
     const [start, end] = [r.start(0), r.end(r.length - 1)];
     if (lastSeekable?.[0] === start && lastSeekable[1] === end) return;
     lastSeekable = [start, end];
-    const bytes = new DataView(new ArrayBuffer(8));
-    bytes.setFloat64(0, end, true);
-    send('seekable', start, new Uint8Array(bytes.buffer));
+    send('seekable', start, toBytes([end]));
   };
   const media = {
     timeupdate: () => { send('time', video.currentTime); buffered(); seekable(); },
     seeking: () => send('time', video.currentTime), // no timeupdate until a seek has data
     durationchange: () => { send('duration', video.duration); seekable(); },
     progress: () => { buffered(); seekable(); },
-    emptied: () => { lastSeekable = undefined; }, // a new source: report its range even if it matches
+    emptied: () => { lastSeekable = undefined; buffered(); }, // a new source: report its window even if it matches
     play: () => send('playing'),
     playing: () => send('playing'),
     pause: () => send('paused'),

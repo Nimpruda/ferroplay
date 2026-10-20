@@ -1,5 +1,5 @@
 use player::plugins::{AbLoop, Keyboard, Loop, StartAt};
-use player::{Cmd, Event, Fact, Intent, Player};
+use player::{Cmd, Event, Fact, Intent, Player, Ranges};
 
 fn loaded(duration: f64) -> Player {
     let mut p = Player::new().with(Keyboard { step: 5.0 });
@@ -132,7 +132,7 @@ fn live_without_window() -> Player {
 fn live_progress_is_relative_to_the_window_and_the_label_has_no_total() {
     let mut p = live((10.0, 60.0));
     p.dispatch(Event::Saw(Fact::Time(35.0)));
-    p.dispatch(Event::Saw(Fact::Buffered(45.0)));
+    p.dispatch(Event::Saw(Fact::Buffered(Ranges(vec![(30.0, 45.0)]))));
     let v = p.state.view();
     assert_eq!((v.progress, v.buffered), (0.5, 0.7));
     assert_eq!(v.label, "0:35");
@@ -150,7 +150,7 @@ fn start_at_waits_for_a_finite_duration() {
 fn live_progress_stays_on_the_bar_when_the_window_slides_past_the_playhead() {
     let mut p = live((100.0, 124.0));
     p.dispatch(Event::Saw(Fact::Time(90.0))); // paused while the window slid on
-    p.dispatch(Event::Saw(Fact::Buffered(0.0))); // nothing buffered under the playhead
+    p.dispatch(Event::Saw(Fact::Buffered(Ranges(vec![(100.0, 110.0)])))); // nothing buffered under the playhead
     let v = p.state.view();
     assert_eq!((v.progress, v.buffered), (0.0, 0.0));
 }
@@ -161,4 +161,40 @@ fn a_new_load_forgets_the_old_seekable_window() {
     p.dispatch(Event::Do(Intent::Load("https://cdn.test/other.m3u8".into())));
     // Still live, but the new stream has not reported its window: nothing to map the number keys onto.
     assert_eq!(p.dispatch(Event::Key('0')), []);
+}
+
+#[test]
+fn the_buffered_bar_ends_with_the_range_under_the_playhead() {
+    let mut p = loaded(100.0);
+    p.dispatch(Event::Saw(Fact::Buffered(Ranges(vec![(0.0, 10.0), (20.0, 30.0)]))));
+    let bar = |p: &mut Player, t| {
+        p.dispatch(Event::Saw(Fact::Time(t)));
+        p.state.view().buffered
+    };
+    assert_eq!(bar(&mut p, 5.0), 0.1);
+    assert_eq!(bar(&mut p, 10.0), 0.1, "the end of a range is in it");
+    assert_eq!(bar(&mut p, 15.0), 0.0, "between ranges: nothing plays from here");
+    assert_eq!(bar(&mut p, 25.0), 0.3);
+}
+
+#[test]
+fn ranges_answer_where_a_time_is_and_what_comes_next() {
+    let r = Ranges(vec![(0.066, 2.0), (2.05, 4.0)]);
+    assert_eq!(r.end_at(1.0), Some(2.0));
+    assert_eq!(r.end_at(0.0), None, "before the first range");
+    assert_eq!(r.next_start(0.0), Some(0.066));
+    assert_eq!(r.next_start(2.0), Some(2.05));
+    assert_eq!(r.next_start(2.05), None, "a range that starts at t is not after it");
+    assert_eq!(Ranges::default().end_at(0.0), None);
+    assert_eq!(Ranges::default().next_start(0.0), None);
+}
+
+#[test]
+fn ranges_come_from_the_hosts_bytes_or_not_at_all() {
+    let bytes: Vec<u8> = [0.5f64, 2.0, 3.0, 4.5].iter().flat_map(|x| x.to_le_bytes()).collect();
+    assert_eq!(Ranges::from_le_bytes(&bytes), Some(Ranges(vec![(0.5, 2.0), (3.0, 4.5)])));
+    assert_eq!(Ranges::from_le_bytes(&[]), Some(Ranges::default()), "nothing buffered");
+    for len in [8, 15, 17, 24] {
+        assert_eq!(Ranges::from_le_bytes(&bytes[..len]), None, "{len} bytes");
+    }
 }

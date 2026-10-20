@@ -1,3 +1,4 @@
+use crate::Ranges;
 use alloc::{string::String, vec::Vec};
 
 /// Something the host reported.
@@ -5,7 +6,8 @@ use alloc::{string::String, vec::Vec};
 pub enum Fact {
     Time(f64),
     Duration(f64),
-    Buffered(f64),
+    /// Every buffered range of the media element.
+    Buffered(Ranges),
     Playing,
     Paused,
     Ended,
@@ -77,7 +79,7 @@ pub enum Cmd {
 pub struct State {
     pub time: f64,
     pub duration: f64,
-    pub buffered: f64,
+    pub buffered: Ranges,
     pub volume: f64,
     pub rate: f64,
     pub paused: bool,
@@ -93,7 +95,7 @@ impl Default for State {
         Self {
             time: 0.0,
             duration: 0.0,
-            buffered: 0.0,
+            buffered: Ranges::default(),
             volume: 1.0,
             rate: 1.0,
             paused: true,
@@ -111,7 +113,7 @@ impl State {
             Fact::Time(t) => self.time = t,
             // An infinite duration is a live stream: keep it, and seek within the seekable window instead.
             Fact::Duration(d) => self.duration = if d.is_nan() { 0.0 } else { d },
-            Fact::Buffered(b) => self.buffered = b,
+            Fact::Buffered(ref ranges) => self.buffered = ranges.clone(),
             Fact::Playing => (self.paused, self.waiting) = (false, false),
             Fact::Paused | Fact::Ended => (self.paused, self.waiting) = (true, false),
             Fact::Waiting => self.waiting = true,

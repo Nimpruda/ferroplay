@@ -100,6 +100,8 @@ def playback(name, b, url, engine):
     s = state(b)
     via = 'blob' if engine else 'http'
     check(f'{name}: plays', playing and not s['paused'] and s['width'] > 0 and s['src'].startswith(via) and not s['error'], s)
+    bar = b.js("(s => [+s.getPropertyValue('--pos'), +s.getPropertyValue('--buf')])(document.querySelector('.vp-seek').style)")
+    check(f'{name}: the seek bar shows what is buffered ahead', 0 < bar[0] < bar[1] <= 1, f'position, buffered: {bar}')
     if engine:
         best = until(b, f"{V}.videoWidth === 854", 20)
         check(f'{name}: climbs to 480p on a fast network', best, f'qualities fetched: {qualities(b)}')
