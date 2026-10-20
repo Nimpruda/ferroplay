@@ -101,6 +101,21 @@ fn view_formats_time() {
     assert_eq!(loaded(0.0).state.view().label, "0:00 / 0:00");
 }
 
+#[test]
+fn facts_the_view_does_not_show_leave_it_equal() {
+    // The host paints only when the view differs from the last one painted: these must not count as a change.
+    let mut p = loaded(60.0);
+    p.dispatch(Event::Saw(Fact::Time(12.0)));
+    buffered(&mut p, &[(0.0, 30.0)]);
+    let before = p.state.view();
+    buffered(&mut p, &[(0.0, 30.0)]);
+    p.dispatch(Event::Saw(Fact::Rate(2.0)));
+    p.dispatch(Event::Saw(Fact::Seekable(0.0, 60.0)));
+    assert_eq!(p.state.view(), before);
+    p.dispatch(Event::Saw(Fact::Time(13.0)));
+    assert_ne!(p.state.view(), before, "a new second is a change");
+}
+
 fn live(window: (f64, f64)) -> Player {
     let mut p = live_without_window();
     p.dispatch(Event::Saw(Fact::Seekable(window.0, window.1)));

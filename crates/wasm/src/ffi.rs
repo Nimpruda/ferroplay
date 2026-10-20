@@ -5,7 +5,7 @@ use alloc::{borrow::Cow, boxed::Box, string::String, vec, vec::Vec};
 use core::cell::RefCell;
 use hls::Hls;
 use player::plugins::{AbLoop, Gaps, Keyboard, Loop, StartAt};
-use player::{Cmd, Event, Fact, Intent, Player, Ranges};
+use player::{Cmd, Event, Fact, Intent, Player, Ranges, View};
 
 #[global_allocator]
 static ALLOC: dlmalloc::GlobalDlmalloc = dlmalloc::GlobalDlmalloc;
@@ -33,13 +33,23 @@ unsafe extern "C" {
     );
 }
 
-struct Players(RefCell<Vec<Option<Player>>>);
+/// A player and the view the host last painted for it, so an event that changes nothing visible paints nothing.
+struct Slot {
+    player: Player,
+    shown: Option<View>,
+}
+
+struct Players(RefCell<Vec<Option<Slot>>>);
 // SAFETY: wasm32-unknown-unknown is single-threaded.
 unsafe impl Sync for Players {}
 static PLAYERS: Players = Players(RefCell::new(Vec::new()));
 
-fn with<R>(id: u32, f: impl FnOnce(&mut Player) -> R) -> Option<R> {
+fn slot<R>(id: u32, f: impl FnOnce(&mut Slot) -> R) -> Option<R> {
     PLAYERS.0.borrow_mut().get_mut(id as usize)?.as_mut().map(f)
+}
+
+fn with<R>(id: u32, f: impl FnOnce(&mut Player) -> R) -> Option<R> {
+    slot(id, |s| f(&mut s.player))
 }
 
 /// A buffer for the host to fill. Ownership comes back with `player_event`.
@@ -59,7 +69,7 @@ fn take(data: *mut u8, len: usize) -> Vec<u8> {
 #[unsafe(no_mangle)]
 pub extern "C" fn player_new() -> u32 {
     let mut ps = PLAYERS.0.borrow_mut();
-    ps.push(Some(Player::new()));
+    ps.push(Some(Slot { player: Player::new(), shown: None }));
     ps.len() as u32 - 1
 }
 
@@ -99,9 +109,11 @@ pub extern "C" fn player_event(id: u32, code: u32, value: f64, data: *mut u8, le
         unsafe { cmd(id, code, value, data.as_ptr(), data.len()) };
     }
     // Painted after the commands: one of them may have reported back (an event within this one), and the
-    // view must include it. Gone if a command destroyed the player.
-    if let Some(v) = with(id, |p| p.state.view()) {
+    // view must include it. Gone if a command destroyed the player; skipped if it looks as last painted.
+    let fresh = slot(id, |s| Some(s.player.state.view()).filter(|v| s.shown.as_ref() != Some(v))).flatten();
+    if let Some(v) = fresh {
         unsafe { render(id, v.playing, v.waiting, v.muted, v.progress, v.buffered, v.volume, v.label.as_ptr(), v.label.len()) };
+        slot(id, |s| s.shown = Some(v));
     }
     cmds.len() as u32
 }

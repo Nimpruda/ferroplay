@@ -34,11 +34,17 @@ const players = new Map();
 const utf8 = new TextDecoder();
 let core;
 
-const lookup = (table, name) => {
-  const i = table.indexOf(name);
-  if (i < 0) throw new Error(`unknown name "${name}", expected one of: ${table.join(', ')}`);
-  return i;
+// Name to code, by a map built once: a send runs for every media event. A Map, not an object, so a name like
+// "toString" is unknown rather than inherited.
+const codes = table => {
+  const map = new Map(table.map((name, i) => [name, i]));
+  return name => {
+    const code = map.get(name);
+    if (code === undefined) throw new Error(`unknown name "${name}", expected one of: ${table.join(', ')}`);
+    return code;
+  };
 };
+const eventCode = codes(EVENTS), pluginCode = codes(PLUGINS), knobCode = codes(KNOBS);
 const settle = promise => promise?.catch(() => {});
 // Numbers as 8 little-endian bytes each, read as `f64::from_le_bytes` in Rust.
 const toBytes = numbers => {
@@ -75,8 +81,8 @@ export const defaults = { keyboard: 5, gaps: true };
  */
 export function player(video, plugins = {}) {
   const id = core.player_new();
-  const send = (name, value = 0, bytes) => core.player_event(id, lookup(EVENTS, name), +value, ...pass(bytes));
-  const use = (name, arg = 0) => core.player_use(id, lookup(PLUGINS, name), +arg);
+  const send = (name, value = 0, bytes) => core.player_event(id, eventCode(name), +value, ...pass(bytes));
+  const use = (name, arg = 0) => core.player_use(id, pluginCode(name), +arg);
   const jsPlugins = [];
   const tuners = new Map(); // knob name -> function
   for (const [name, arg] of Object.entries(plugins)) {
@@ -233,7 +239,7 @@ export function player(video, plugins = {}) {
     pause: () => send('pause'),
     root, video, send, use,
     tune: (name, knob) => {
-      lookup(KNOBS, name); // throws on a name that is not a knob: a typo must not silently keep the default
+      knobCode(name); // throws on a name that is not a knob: a typo must not silently keep the default
       if (typeof knob !== 'function') throw new TypeError(`tuning knob "${name}" must be a function, not ${typeof knob}`);
       tuners.set(name, knob);
     },
