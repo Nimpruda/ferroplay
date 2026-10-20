@@ -25,6 +25,8 @@ HIDE_NATIVE_HLS = """const canPlayType = HTMLMediaElement.prototype.canPlayType;
 HTMLMediaElement.prototype.canPlayType = function (t) { return /mpegurl/i.test(t) ? '' : canPlayType.call(this, t); };"""
 MP4 = 'https://download.blender.org/durian/trailer/sintel_trailer-480p.mp4'
 V = "document.getElementById('main')"
+# Both browsers on the Rust engine: Chrome's own HLS hidden.
+BROWSERS = (('firefox', Firefox), ('chrome', lambda: Chrome(init_script=HIDE_NATIVE_HLS)))
 failures = []
 
 
@@ -71,9 +73,14 @@ def open_page(b, url, play=True):
         b.js("document.querySelector('.vp [data-do=toggle]').click()")
 
 
+def paste(b, link):
+    """Plays `link` from the page's paste box. A full URL: the box is a URL field, and refuses a relative one."""
+    b.js(f"(f => {{ f.play.value = '{link}'; f.requestSubmit(); }})(document.getElementById('open'))")
+
+
 def paste_mp4(b):
     """Plays the MP4 link through the paste box; true once it is playing."""
-    b.js(f"(f => {{ f.play.value = '{MP4}'; f.requestSubmit(); }})(document.getElementById('open'))")
+    paste(b, MP4)
     return until(b, f"{V}.currentTime > 1 && {V}.src === '{MP4}'", 20)
 
 
@@ -275,13 +282,34 @@ def unusable(url):
             b.close()
 
 
+def skipped_segment(url):
+    """One segment that is not MPEG-TS (the master playlist, here) among the demo's 240p ones: it is warned about
+    and skipped, and the playhead, which would wait at its hole forever, is moved past it and plays to the end."""
+    segments = ('../240p/000.ts', '../master.m3u8', '../240p/002.ts')
+    playlist = '#EXTM3U\n#EXT-X-TARGETDURATION:4\n' + ''.join(f'#EXTINF:4,\n{s}\n' for s in segments) + '#EXT-X-ENDLIST\n'
+    with served_playlist('skipped-e2e', playlist) as path:
+        for name, browser in BROWSERS:
+            b = browser()
+            try:
+                open_page(b, f'{url}?plugins=gaps,hls', play=False)
+                # Warnings are recorded in the page, as Firefox's console is out of reach; then the paste box plays the playlist.
+                b.js("(() => { window.warnings = []; const warn = console.warn;"
+                     " console.warn = (...args) => { warnings.push(args.join(' ')); warn(...args); }; return 0; })()")
+                paste(b, url + path)
+                ended, s, warnings = until(b, f"{V}.ended", 40), state(b), b.js('window.warnings')
+                check(f'{name}: a VOD plays over the hole an unusable segment leaves, to the end', ended and not s['error'], s)
+                check(f'{name}: the unusable segment is warned about as skipped', any('master.m3u8 skipped' in w for w in warnings), warnings)
+            finally:
+                b.close()
+
+
 def fmp4_start_gap(url):
     """ffmpeg's fMP4 fixtures as a VOD: its first frame is at 66 ms (B-frames), and Media Source ignores the edit
     list that hides it, so the buffer starts after 0. With the gaps plugin it plays to the end everywhere."""
     playlist = ('#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-TARGETDURATION:1\n#EXT-X-MAP:URI="fmp4-init.mp4"\n'
                 '#EXTINF:1,\nfmp4-0.m4s\n#EXTINF:1,\nfmp4-1.m4s\n#EXT-X-ENDLIST\n')
     with served_playlist('fmp4-e2e', playlist, ('fmp4-init.mp4', 'fmp4-0.m4s', 'fmp4-1.m4s')) as path:
-        for name, browser in (('firefox', Firefox), ('chrome', lambda: Chrome(init_script=HIDE_NATIVE_HLS))):
+        for name, browser in BROWSERS:
             b = browser()
             try:
                 open_page(b, f'{url}?play={path}&plugins=gaps,hls', play=False)
@@ -325,6 +353,7 @@ def main():
         playback('chrome (built-in HLS)', Chrome(), url, engine=False)
         live(url)
         unusable(url)
+        skipped_segment(url)
         fmp4_start_gap(url)
         links(url, other)
         core_build(url)

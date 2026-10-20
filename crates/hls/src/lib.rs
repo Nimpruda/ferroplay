@@ -27,6 +27,9 @@ const LIVE_RETRIES: f64 = 10.0;
 const INIT_RETRIES: f64 = 0.0;
 /// `EXT-X-TARGETDURATION` when a playlist has none.
 const DEFAULT_TARGET: f64 = 6.0;
+/// Seconds before a skipped segment's start that still count as its hole: the media before it may run out a
+/// little early (an audio track shorter than the video, a rounded `EXTINF`), and the element waits there.
+const EDGE: f64 = 0.5;
 
 /// A value the plugin can be tuned with. Where it depends on the target duration, that comes in seconds.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -86,9 +89,11 @@ pub struct Hls {
     /// The variant whose media playlist arrived last. Its list is the current timeline: only the variant
     /// being played is reloaded, so the others' lists go stale.
     current: usize,
-    /// The segments in the Media Source: sequence number (the same across variants) and end time. Kept
-    /// apart from the playlists, because a live window can slide past a segment that is still buffered.
-    appended: Vec<(u64, f64)>,
+    /// The segments in the Media Source: sequence number (the same across variants), end time, and the start
+    /// time of one that could not be used. Kept apart from the playlists, because a live window can slide past a
+    /// segment that is still buffered. A segment that could not be used is in too, so it is not fetched again;
+    /// nothing is buffered for it, and the gaps plugin leaves holes that large alone (`past_skipped`).
+    appended: Vec<(u64, f64, Option<f64>)>,
     /// Whether the Media Source is open (after the first media playlist).
     opened: bool,
     /// Whether the last media playlist had no `EXT-X-ENDLIST`: more segments will come.
@@ -206,7 +211,7 @@ impl Hls {
 
     /// Whether the segment with this sequence number is in the Media Source.
     fn loaded(&self, sequence: u64) -> bool {
-        self.appended.iter().any(|&(s, _)| s == sequence)
+        self.appended.iter().any(|&(s, ..)| s == sequence)
     }
 
     /// Handles a finished download; why it cannot be used, if it cannot.
@@ -266,9 +271,10 @@ impl Hls {
                 };
                 let Some(segment) = self.variants[v].segment(sequence) else { return Ok(()) };
                 let (start, end, fmp4) = (segment.start, segment.end(), segment.map.is_some());
-                self.appended.push((sequence, end)); // even if unusable: skip a broken segment rather than retry it forever
                 let fragment = if fmp4 { self.fmp4_fragment(data, start) } else { self.ts_fragment(data, start, sequence, out) };
-                let fragment = fragment.map_err(|why| Failure::Unusable(["segment ", &self.fetching, ": ", &why].concat()))?;
+                // Even if unusable: skip a broken segment rather than retry it forever.
+                self.appended.push((sequence, end, fragment.is_err().then_some(start)));
+                let fragment = fragment.map_err(|why| Failure::Unusable(["segment ", &self.fetching, " skipped: ", &why].concat()))?;
                 out.push(Cmd::Append(fragment));
             }
             Request::Init(v, sequence) => {
@@ -343,8 +349,8 @@ impl Hls {
         // Forget what is far behind the playhead, and have the host drop it. By time, not by playlist:
         // a live window slides past segments before they are far behind.
         let behind = time - self.behind();
-        if let Some(until) = self.appended.iter().map(|&(_, end)| end).filter(|&end| end < behind).reduce(f64::max) {
-            self.appended.retain(|&(_, end)| end >= behind);
+        if let Some(until) = self.appended.iter().map(|&(_, end, _)| end).filter(|&end| end < behind).reduce(f64::max) {
+            self.appended.retain(|&(_, end, _)| end >= behind);
             out.push(Cmd::Remove(until));
         }
 
@@ -364,6 +370,17 @@ impl Hls {
         if self.live {
             self.reload(v, out);
         }
+    }
+
+    /// Where to move a playhead at `time` that waits in the hole a skipped segment left: that segment's end. Only
+    /// while the element waits to play: paused or playing, it is not stuck. By the playlist's times, not by what
+    /// is buffered: the element reports that only after an append, so it may not show a segment that is in.
+    fn past_skipped(&self, state: &State, time: f64) -> Option<f64> {
+        if !state.waiting || state.paused {
+            return None;
+        }
+        let mut holes = self.appended.iter().filter_map(|&(_, end, hole)| Some((hole?, end)));
+        holes.find(|&(start, end)| start - EDGE <= time && time < end).map(|(_, end)| end)
     }
 
     /// The first segment of variant `v` the buffer wants now: not loaded, and within reach of the playhead.
@@ -468,7 +485,12 @@ impl Plugin for Hls {
             _ => {}
         }
         // Until the element reports its position, downloads go from the hold-back (set by a playlist just now).
-        let time = self.start_at.unwrap_or(state.time);
+        let mut time = self.start_at.unwrap_or(state.time);
+        if let Some(end) = self.past_skipped(state, time) {
+            // An intent, not a `Cmd::Seek`: `State` moves its time, so the hole is not jumped again.
+            out.push(Intent::Seek(end));
+            (self.start_at, time) = (None, end);
+        }
         self.reconcile(time);
         if !self.url.is_empty() && self.pending.is_none() && !self.retry.gave_up {
             self.next(time, &mut cmds);

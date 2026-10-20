@@ -142,10 +142,92 @@ fn gives_up_after_three_retries() {
 fn an_unusable_segment_is_said_and_skipped() {
     let mut p = playing("https://cdn.test/movie.m3u8");
     p.dispatch(loaded(window("s", 0, 10, 2.0).as_bytes()));
-    assert_eq!(
-        p.dispatch(loaded(NOT_TS)),
-        [Cmd::Warn("segment https://cdn.test/s0.ts: no MPEG-TS media this player can play".into()), fetch("https://cdn.test/s1.ts")]
-    );
+    assert_eq!(p.dispatch(loaded(NOT_TS)), [Cmd::Warn(SKIPPED_S0.into()), fetch("https://cdn.test/s1.ts")]);
+}
+
+/// What the element reports, one fact after another: the commands for all of them.
+fn saw(p: &mut Player, facts: impl IntoIterator<Item = Fact>) -> Vec<Cmd> {
+    facts.into_iter().flat_map(|fact| p.dispatch(Event::Saw(fact))).collect()
+}
+
+const SKIPPED_S0: &str = "segment https://cdn.test/s0.ts skipped: no MPEG-TS media this player can play";
+
+/// A VOD of ten 2 s segments, all in, where s1 (2–4 s) could not be used; the element plays, at 1 s.
+fn skipped_s1() -> Player {
+    let mut p = playing("https://cdn.test/movie.m3u8");
+    p.dispatch(loaded(window("s", 0, 10, 2.0).as_bytes()));
+    p.dispatch(loaded(SAMPLE));
+    assert_eq!(p.dispatch(loaded(NOT_TS)).last(), Some(&fetch("https://cdn.test/s2.ts")), "s1 is counted once, not fetched again");
+    for _ in 2..10 {
+        p.dispatch(loaded(SAMPLE));
+    }
+    assert_eq!(saw(&mut p, [Fact::Duration(20.0), Fact::Playing, Fact::Time(1.0)]), []);
+    p
+}
+
+#[test]
+fn a_playhead_waiting_in_a_skipped_segment_is_moved_to_its_end_once() {
+    let mut p = skipped_s1();
+    assert_eq!(saw(&mut p, [Fact::Time(2.5)]), [], "playing: not stuck");
+    assert_eq!(saw(&mut p, [Fact::Waiting]), [Cmd::Seek(4.0)]);
+    assert_eq!(saw(&mut p, [Fact::Waiting, Fact::Seeking(4.0)]), [], "the playhead is at 4 s already");
+}
+
+#[test]
+fn a_playhead_waiting_where_the_media_before_a_skipped_segment_runs_out_is_moved_past_it() {
+    // s0's audio ends a little before 2 s: the element waits there, not inside s1.
+    let mut p = skipped_s1();
+    assert_eq!(saw(&mut p, [Fact::Time(1.6), Fact::Waiting]), [Cmd::Seek(4.0)]);
+}
+
+#[test]
+fn nothing_moves_while_paused_playing_or_away_from_a_skipped_segment() {
+    let mut p = skipped_s1();
+    assert_eq!(saw(&mut p, [Fact::Waiting]), [], "at 1 s, more than half a second before the hole");
+    assert_eq!(saw(&mut p, [Fact::Time(4.0)]), [], "at 4 s, after the hole");
+    // In the hole, but paused, or playing.
+    assert_eq!(saw(&mut p, [Fact::Paused, Fact::Seeking(3.0), Fact::Waiting]), [], "paused");
+    assert_eq!(saw(&mut p, [Fact::Playing]), [], "playing");
+    // Stuck there once more: moved on.
+    assert_eq!(saw(&mut p, [Fact::Waiting]), [Cmd::Seek(4.0)]);
+}
+
+#[test]
+fn a_playhead_waiting_for_a_segment_on_its_way_is_not_moved_past_a_hole_after_it() {
+    let mut p = playing("https://cdn.test/movie.m3u8");
+    p.dispatch(loaded(window("s", 0, 100, 10.0).as_bytes()));
+    for data in [SAMPLE, SAMPLE, NOT_TS] {
+        p.dispatch(loaded(data));
+    }
+    // s2 (20–30 s) is skipped. Back at 5 s, after s0 was dropped: s0 is on its way again, and once it is in, the
+    // element has yet to say so. Neither moves the playhead.
+    assert_eq!(saw(&mut p, [Fact::Duration(1000.0), Fact::Playing, Fact::Time(45.0)]), [Cmd::Remove(10.0), fetch("https://cdn.test/s4.ts")]);
+    assert_eq!(saw(&mut p, [Fact::Seeking(5.0), Fact::Waiting]), [fetch("https://cdn.test/s0.ts")]);
+    assert!(matches!(&p.dispatch(loaded(SAMPLE))[..], [Cmd::Append(_), Cmd::Fetch(..)]));
+    // It plays to the end of s1 and waits at the hole.
+    assert_eq!(saw(&mut p, [Fact::Playing, Fact::Time(19.9), Fact::Waiting]), [Cmd::Seek(30.0)]);
+}
+
+#[test]
+fn a_playhead_already_waiting_when_a_segment_turns_out_unusable_is_moved_past_it() {
+    let mut p = playing("https://cdn.test/movie.m3u8");
+    p.dispatch(loaded(window("s", 0, 10, 2.0).as_bytes()));
+    saw(&mut p, [Fact::Duration(20.0), Fact::Playing, Fact::Waiting]);
+    assert_eq!(p.dispatch(loaded(NOT_TS)), [Cmd::Seek(2.0), Cmd::Warn(SKIPPED_S0.into()), fetch("https://cdn.test/s1.ts")]);
+}
+
+#[test]
+fn a_skipped_segment_far_behind_is_forgotten_and_skipped_again_when_back_in_reach() {
+    let mut p = playing("https://cdn.test/movie.m3u8");
+    p.dispatch(loaded(window("s", 0, 100, 10.0).as_bytes()));
+    for data in [NOT_TS, SAMPLE, SAMPLE] {
+        p.dispatch(loaded(data));
+    }
+    // At 45 s, s0 (0–10 s) is more than 30 s behind: dropped, and its hole forgotten with it.
+    assert_eq!(saw(&mut p, [Fact::Duration(1000.0), Fact::Playing, Fact::Time(45.0)]), [Cmd::Remove(10.0), fetch("https://cdn.test/s4.ts")]);
+    // Back to 5 s: s0 is fetched again, not jumped, and skipped again when it is still unusable.
+    assert_eq!(saw(&mut p, [Fact::Seeking(5.0), Fact::Waiting]), [fetch("https://cdn.test/s0.ts")]);
+    assert_eq!(p.dispatch(loaded(NOT_TS)), [Cmd::Seek(10.0), Cmd::Warn(SKIPPED_S0.into()), fetch("https://cdn.test/s3.ts")]);
 }
 
 #[test]
@@ -157,7 +239,7 @@ fn unusable_segments_in_a_row_fail_the_stream_once() {
     }
     let cmds = p.dispatch(loaded(NOT_TS));
     assert!(matches!(&cmds[..], [Cmd::Warn(_), Cmd::Fail(_)]), "{cmds:?}");
-    assert!(fails_with(&cmds, "giving up: segment https://cdn.test/s3.ts: no MPEG-TS media"), "{cmds:?}");
+    assert!(fails_with(&cmds, "giving up: segment https://cdn.test/s3.ts skipped: no MPEG-TS media"), "{cmds:?}");
     assert_eq!(p.dispatch(Event::Saw(Fact::Time(1.0))), [], "said once, and nothing more is downloaded");
 }
 
@@ -548,6 +630,6 @@ fn an_fmp4_segment_that_goes_back_in_time_is_unusable() {
     p.dispatch(loaded(fmp4_window("", 3, "").as_bytes()));
     p.dispatch(loaded(INIT));
     p.dispatch(loaded(SEGMENT_1));
-    let reason = "segment https://cdn.test/1.m4s: media segment: a decode time before the start of the stream";
+    let reason = "segment https://cdn.test/1.m4s skipped: media segment: a decode time before the start of the stream";
     assert_eq!(p.dispatch(loaded(SEGMENT_0)), [Cmd::Warn(reason.into()), fetch("https://cdn.test/2.m4s")]);
 }

@@ -134,7 +134,8 @@ the `.m3u8` URL as `video.src`. Elsewhere (Firefox, older browsers) the Rust `Hl
 - converts each segment with `ts2mp4` and feeds it to Media Source,
 - picks the best quality that fits 80 % of the measured bandwidth: drops at once after a slow
   download, climbs gradually,
-- after a seek, abandons a download that is no longer needed.
+- after a seek, abandons a download that is no longer needed,
+- skips a segment it cannot use, says so, and moves a playhead that waits at its hole past it.
 
 The JS side only downloads and calls Media Source; it does what the Rust side asks.
 
@@ -156,6 +157,7 @@ only) then checks, with our server:
 - HLS content types, and the proxy rewriting playlists,
 - in Firefox and Chrome (Rust engine and Chrome's own HLS): start, quality climb, seek, end, no errors,
 - in Firefox and Chrome, the fMP4 fixtures (a buffer that starts at 66 ms) play to the end,
+- in Firefox and Chrome, a VOD with one unusable segment warns that it is skipped and plays over its hole to the end,
 - a cross-origin playlist link without CORS plays via the proxy, plugin checkboxes rebuild the
   player and keep the position, the paste box plays an MP4 link,
 - in Chrome, the core-only build plays a pasted MP4 link and throws for `hls`,
