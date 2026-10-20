@@ -105,7 +105,10 @@ export function player(video, plugins = {}) {
     fullscreen: f => settle(f ? root.requestFullscreen?.() : document.exitFullscreen?.()),
     source: (_, bytes) => {
       const url = utf8.decode(bytes); // absolute: see `load`
-      if (video.src !== url) return void (video.src = url);
+      if (video.src !== url) {
+        video.src = url;
+        return;
+      }
       // The same source (the one given in HTML, say) is not reloaded, so the element will not report again what
       // the core forgot on the load: report it now.
       lastBuffered = [];
@@ -205,7 +208,8 @@ export function player(video, plugins = {}) {
     seeking: () => send('seeking', video.currentTime), // every seek, whoever asked; no timeupdate until it has data
     durationchange: () => { send('duration', video.duration); seekable(); },
     progress: () => { buffered(); seekable(); },
-    emptied: () => { lastSeekable = undefined; buffered(); }, // a new source: report its window even if it matches
+    // A new source: report its window even if it matches, and that the element paused (it fires no `pause` for that).
+    emptied: () => { lastSeekable = undefined; buffered(); send(video.paused ? 'paused' : 'playing'); },
     play: () => send('playing'),
     playing: () => send('playing'),
     pause: () => send('paused'),

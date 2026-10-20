@@ -178,6 +178,14 @@ fn a_new_load_forgets_the_old_media_and_keeps_the_element_settings() {
 }
 
 #[test]
+fn seeks_are_not_clamped_before_the_new_source_reports_its_duration() {
+    let mut p = loaded(10.0);
+    p.dispatch(Event::Do(Intent::Load("https://cdn.test/other.mp4".into())));
+    assert_eq!(p.dispatch(Event::Do(Intent::Seek(30.0))), [Cmd::Seek(30.0)], "unbounded, not clamped to a duration of 0");
+    assert_eq!(p.dispatch(Event::Key('5')), [], "nothing to map a fraction onto yet");
+}
+
+#[test]
 fn a_live_stream_loaded_over_a_vod_shows_just_its_clock() {
     let mut p = loaded(52.2);
     p.dispatch(Event::Saw(Fact::Time(545.0)));

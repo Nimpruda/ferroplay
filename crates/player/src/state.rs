@@ -172,10 +172,11 @@ impl State {
         }
     }
 
-    /// The times a seek may go to. A finite duration is all of it. An infinite one (live) is the
-    /// seekable range the host reported, or everything from 0 until it reports one.
+    /// The times a seek may go to. A known duration is all of it. An infinite one (live), or none yet (a source
+    /// that has not reported, after a load), is the seekable range the host reported, or everything from 0
+    /// until it reports one.
     pub fn window(&self) -> (f64, f64) {
-        if self.duration.is_finite() {
+        if self.duration > 0.0 && self.duration.is_finite() {
             (0.0, self.duration)
         } else {
             self.seekable.unwrap_or((0.0, f64::INFINITY))
