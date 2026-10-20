@@ -132,8 +132,7 @@ the `.m3u8` URL as `video.src`. Elsewhere (Firefox, older browsers) the Rust `Hl
 
 The JS side only downloads and calls Media Source; it does what the Rust side asks.
 
-Not supported yet: encryption (`#EXT-X-KEY`), fMP4 segments (`#EXT-X-MAP`),
-separate audio renditions (`#EXT-X-MEDIA`), discontinuities, HEVC.
+Not supported yet: encryption (`#EXT-X-KEY`), separate audio renditions (`#EXT-X-MEDIA`), discontinuities, HEVC.
 
 ## Tests
 
