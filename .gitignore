@@ -1,5 +1,6 @@
 target/
 web/player.wasm
+web/player-core.wasm
 web/hls/
 __pycache__/
 web/media/

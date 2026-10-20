@@ -3,6 +3,7 @@
 
 use alloc::{borrow::Cow, boxed::Box, string::String, vec, vec::Vec};
 use core::cell::RefCell;
+#[cfg(feature = "hls")]
 use hls::Hls;
 use player::plugins::{AbLoop, Gaps, Keyboard, Loop, StartAt};
 use player::{Cmd, Event, Fact, Intent, Player, Ranges, View};
@@ -19,6 +20,7 @@ fn panic(_: &core::panic::PanicInfo) -> ! {
 unsafe extern "C" {
     fn cmd(id: u32, code: u32, value: f64, data: *const u8, len: usize);
     /// The host's answer for the knob called `name`; NaN keeps the default.
+    #[cfg(feature = "hls")]
     fn tune(id: u32, name: *const u8, name_len: usize, value: f64) -> f64;
     fn render(
         id: u32,
@@ -80,22 +82,29 @@ pub extern "C" fn player_free(id: u32) {
     }
 }
 
+/// Returns false for a plugin this build does not have (`Hls` in the core-only build), so the host can say so
+/// instead of quietly playing without it. A freed player is not the build's fault: true.
 #[unsafe(no_mangle)]
-pub extern "C" fn player_use(id: u32, plugin: u32, arg: f64) {
-    with(id, |p| match plugin {
-        0 => p.add(Keyboard { step: arg }),
-        1 => p.add(Loop),
-        2 => p.add(StartAt::new(arg)),
-        3 => p.add(AbLoop::default()),
-        4 => p.add(Hls::tuned(move |knob| {
-            let (name, value) = (knob.name(), knob.target());
-            // SAFETY: the host answers synchronously and does not call back into the core.
-            let answer = unsafe { tune(id, name.as_ptr(), name.len(), value) };
-            (!answer.is_nan()).then_some(answer)
-        })),
-        5 => p.add(Gaps::default()),
-        _ => {}
-    });
+pub extern "C" fn player_use(id: u32, plugin: u32, arg: f64) -> bool {
+    with(id, |p| {
+        match plugin {
+            0 => p.add(Keyboard { step: arg }),
+            1 => p.add(Loop),
+            2 => p.add(StartAt::new(arg)),
+            3 => p.add(AbLoop::default()),
+            #[cfg(feature = "hls")]
+            4 => p.add(Hls::tuned(move |knob| {
+                let (name, value) = (knob.name(), knob.target());
+                // SAFETY: the host answers synchronously and does not call back into the core.
+                let answer = unsafe { tune(id, name.as_ptr(), name.len(), value) };
+                (!answer.is_nan()).then_some(answer)
+            })),
+            5 => p.add(Gaps::default()),
+            _ => return false,
+        }
+        true
+    })
+    .unwrap_or(true)
 }
 
 /// Returns how many commands the event produced, so the host knows if it was handled.

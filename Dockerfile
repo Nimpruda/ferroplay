@@ -45,7 +45,7 @@ ENV FIREFOX=firefox-esr CHROME=chromium
 COPY --from=planner /src/recipe.json .
 RUN cargo chef cook --recipe-path recipe.json -p server -p ts2mp4
 COPY . .
-COPY --from=wasm /src/web/player.wasm web/
+COPY --from=wasm /src/web/player.wasm /src/web/player-core.wasm web/
 RUN cargo build -p server -p ts2mp4
 CMD ["python3", "e2e/run.py"]
 
@@ -57,7 +57,7 @@ FROM gcr.io/distroless/cc-debian13:nonroot AS server
 WORKDIR /app
 COPY --from=native /src/target/release/server /usr/local/bin/
 COPY web web
-COPY --from=wasm /src/web/player.wasm web/
+COPY --from=wasm /src/web/player.wasm /src/web/player-core.wasm web/
 ENV HOST=0.0.0.0
 EXPOSE 8080
 ENTRYPOINT ["server"]

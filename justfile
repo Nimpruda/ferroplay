@@ -10,7 +10,7 @@ export HOST_GID := `id -g`
 default:
     @just --list
 
-# Build the wasm core into web/ (and the demo media, if ffmpeg is installed)
+# Build the wasm core into web/, with and without HLS (and the demo media, if ffmpeg is installed)
 [group('native')]
 build:
     ./build.sh

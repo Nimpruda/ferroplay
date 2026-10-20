@@ -23,3 +23,15 @@ During real playback with seeks:
 | lol_alloc | grew to 11 MB (fragmentation) | 43.1 / 18.4 KB |
 
 talc + wasm-opt: 36.7 KB / 17.4 KB gzipped, and plays to the end in Chrome and Firefox.
+
+## Core-only build
+
+`build.sh` also builds `player-wasm` with `--no-default-features` into `web/player-core.wasm`: the core and the
+intent-only plugins, without `hls` and `ts2mp4`. Measured (raw / gzipped `-9`):
+
+| Build | wasm-opt `-Oz` (binaryen 120, the Docker `wasm` stage) | No wasm-opt (rustc 1.99.1) |
+|---|---|---|
+| `player.wasm` | 52.9 / 25.2 KB | 60.9 / 26.4 KB |
+| `player-core.wasm` | 15.0 / 6.9 KB | 17.2 / 7.2 KB |
+
+In line with the 16.0 / 6.5 KB estimate in [plugin-modules.md](plugin-modules.md).

@@ -82,7 +82,10 @@ export const defaults = { keyboard: 5, gaps: true };
 export function player(video, plugins = {}) {
   const id = core.player_new();
   const send = (name, value = 0, bytes) => core.player_event(id, eventCode(name), +value, ...pass(bytes));
-  const use = (name, arg = 0) => core.player_use(id, pluginCode(name), +arg);
+  // Throws for a plugin the loaded build lacks (`hls` in player-core.wasm).
+  const use = (name, arg = 0) => {
+    if (!core.player_use(id, pluginCode(name), +arg)) throw new Error(`plugin "${name}" is not in this build`);
+  };
   const jsPlugins = [];
   const tuners = new Map(); // knob name -> function
   for (const [name, arg] of Object.entries(plugins)) {

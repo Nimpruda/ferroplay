@@ -1,12 +1,12 @@
 # player
 
 A video.js replacement: a Rust core compiled to WebAssembly plus a thin DOM shim, with HLS.
-About 26 KB gzipped in total (wasm 20 KB, JS 4.7 KB, CSS 0.9 KB).
+About 31 KB gzipped in total (wasm 25 KB, `player.js` 4.9 KB, CSS 1 KB), or 13 KB with the core-only wasm (6.9 KB).
 
 ```sh
 rustup target add wasm32-unknown-unknown   # once
 prek install                               # once: the git hooks in prek.toml (also need hadolint, docker)
-./build.sh            # wasm -> web/player.wasm (and the demo HLS stream, if ffmpeg is installed)
+./build.sh            # wasm -> web/player.wasm, web/player-core.wasm (and the demo media, if ffmpeg is installed)
 cargo run -p server   # http://127.0.0.1:8080
 cargo test            # every crate's tests, run natively
 python3 e2e/run.py    # real HLS and links through our server, in headless Firefox and Chrome
@@ -32,7 +32,8 @@ Design notes, measurements and the traps we hit: [docs/learnings/](docs/learning
 
 `http://127.0.0.1:8080` is a playground: paste a link (`.mp4` or `.m3u8`) and tick plugins on
 and off; the player is rebuilt in place and keeps its position. Both live in the page URL, so a
-setup can be shared: `/?play=https://…/master.m3u8&plugins=keyboard,gaps,hls,speed`.
+setup can be shared: `/?play=https://…/master.m3u8&plugins=keyboard,gaps,hls,speed`. `/?core=1` runs it on
+`player-core.wasm`, without the hls checkbox.
 
 Playlists from other sites go through the server's proxy (`/proxy/<url>`), which rewrites them
 so every segment does too. So links play even when their site sends no CORS headers.
@@ -56,7 +57,7 @@ plugins. It is for checks by hand: the e2e tests keep their own.
 | `player` | The core: state, plugins, what to paint. No I/O. | – |
 | `ts2mp4` | MPEG-TS (H.264 + AAC) to fragmented MP4. Also a command: `cargo run -p ts2mp4 < seg.ts > seg.mp4`. | – |
 | `hls` | HLS playback as a player plugin, plus M3U8 helpers (`playlist`). | `player`, `ts2mp4` |
-| `player-wasm` | The browser build: a code, a number and optional bytes each way. The only `unsafe`. | `player`, `hls` |
+| `player-wasm` | The browser build: a code, a number and optional bytes each way. The only `unsafe`. | `player`, `hls` (feature `hls`, default) |
 | `server` | Serves `web/` (with HLS content types) and the proxy. | `hls` |
 
 The libraries are `no_std` and dependency-free, so they run (and are tested) anywhere.
@@ -94,6 +95,11 @@ Event ──▶ State.apply(fact) ──▶ plugins ──▶ Intents ──▶ 
 ```
 
 A source set in HTML goes through the plugins like `p.load(url)` does, so `hls` picks up `.m3u8`.
+
+`build.sh` writes two cores. `player.wasm` has everything. `player-core.wasm` has no Rust HLS engine (a
+quarter of the download): pick it for pages that play MP4, or HLS only in browsers that play it themselves,
+with `await init(new URL('player-core.wasm', import.meta.url))`. `use('hls')` on it throws
+`plugin "hls" is not in this build`.
 No plugin is implied: `defaults` is `{ keyboard: 5, gaps: true }`, and `false` leaves one out
 (`{ ...defaults, gaps: false }`).
 
@@ -152,4 +158,5 @@ only) then checks, with our server:
 - in Firefox and Chrome, the fMP4 fixtures (a buffer that starts at 66 ms) play to the end,
 - a cross-origin playlist link without CORS plays via the proxy, plugin checkboxes rebuild the
   player and keep the position, the paste box plays an MP4 link,
+- in Chrome, the core-only build plays a pasted MP4 link and throws for `hls`,
 - at a throttled 0.6 Mbit/s, playback stays on 240p and keeps going.

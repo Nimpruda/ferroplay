@@ -1,6 +1,7 @@
 .git
 target
 web/player.wasm
+web/player-core.wasm
 web/hls
 web/media
 web/catalog

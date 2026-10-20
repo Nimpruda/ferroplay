@@ -9,7 +9,12 @@ crate-type = ["cdylib"]
 
 [dependencies]
 player.workspace = true
-hls.workspace = true
+hls = { workspace = true, optional = true }
 
 [target.wasm32-unknown-unknown.dependencies]
 dlmalloc = { version = "0.2.14", features = ["global"] }
+
+# `--no-default-features` builds web/player-core.wasm: the core and its intent-only plugins, for pages without HLS.
+[features]
+default = ["hls"]
+hls = ["dep:hls"]

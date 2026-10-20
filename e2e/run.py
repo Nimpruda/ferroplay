@@ -71,6 +71,19 @@ def open_page(b, url, play=True):
         b.js("document.querySelector('.vp [data-do=toggle]').click()")
 
 
+def paste_mp4(b):
+    """Plays the MP4 link through the paste box; true once it is playing."""
+    b.js(f"(f => {{ f.play.value = '{MP4}'; f.requestSubmit(); }})(document.getElementById('open'))")
+    return until(b, f"{V}.currentTime > 1 && {V}.src === '{MP4}'", 20)
+
+
+def seek_middle(b):
+    """Presses 5 on the player (keyboard plugin: jump to 50%); true once it plays on from there (26 s in both videos)."""
+    b.js("document.querySelector('.vp').focus()")
+    b.key('5')
+    return until(b, f"{V}.currentTime > 26.5 && {V}.currentTime < 32", 15)
+
+
 def converter():
     """Every segment of every quality, through the Rust converter, must decode cleanly in ffmpeg."""
     subprocess.run(['cargo', 'build', '-q', '-p', 'ts2mp4'], cwd=ROOT, check=True)
@@ -106,10 +119,7 @@ def playback(name, b, url, engine):
     if engine:
         best = until(b, f"{V}.videoWidth === 854", 20)
         check(f'{name}: climbs to 480p on a fast network', best, f'qualities fetched: {qualities(b)}')
-    b.js("document.querySelector('.vp').focus()")
-    b.key('5')  # jump to 50% (26 s)
-    landed = until(b, f"{V}.currentTime > 26.5 && {V}.currentTime < 32", 15)
-    check(f'{name}: seeks to the middle and plays on', landed, state(b))
+    check(f'{name}: seeks to the middle and plays on', seek_middle(b), state(b))
     b.js(f"{V}.currentTime = {V}.duration - 2")
     check(f'{name}: plays to the end', until(b, f"{V}.ended", 15), state(b))
     check(f'{name}: no errors', not b.logs and not state(b)['error'], b.logs)
@@ -139,11 +149,28 @@ def links(url, other):
     # The paste box plays a direct MP4 link, and puts it in the page URL.
     b = Chrome()
     open_page(b, url, play=False)
-    b.js(f"(f => {{ f.play.value = '{MP4}'; f.requestSubmit(); }})(document.getElementById('open'))")
-    ok = until(b, f"{V}.currentTime > 1 && {V}.src === '{MP4}'", 20)
-    check('chrome: paste box plays an MP4 link', ok and 'play=' in b.js('location.search'), state(b))
+    check('chrome: paste box plays an MP4 link', paste_mp4(b) and 'play=' in b.js('location.search'), state(b))
     check('chrome: no errors', not b.logs, b.logs)
     b.close()
+
+
+def core_build(url):
+    """The page on player-core.wasm (no HLS): the paste box plays an MP4 link with every Rust plugin it has, and asking
+    it for hls throws instead of quietly playing without it."""
+    b = Chrome()
+    try:
+        open_page(b, f'{url}?core=1&plugins=keyboard,gaps,abLoop,loop,startAt', play=False)
+        started, jumped = paste_mp4(b), seek_middle(b)
+        wasm = [n.split('/')[-1] for n in downloads(b, '.wasm')]
+        error = b.js("import('./player.js').then(m => { try { m.player(document.createElement('video'), { hls: 0 }); } "
+                     "catch (e) { return e.message; } })")
+        check('chrome, core build: the paste box plays an MP4 link, and the keyboard plugin works',
+              started and jumped and wasm == ['player-core.wasm'] and not b.js("document.querySelector('#plugins [name=hls]')"),
+              f'{state(b)}, wasm {wasm}')
+        check('chrome, core build: use("hls") throws', error == 'plugin "hls" is not in this build', error)
+        check('chrome, core build: no errors', not b.logs, b.logs)
+    finally:
+        b.close()
 
 
 def live(url):
@@ -277,7 +304,7 @@ def slow_network(url):
 
 
 def main():
-    for needed in ('web/player.wasm', 'web/hls/master.m3u8'):
+    for needed in ('web/player.wasm', 'web/player-core.wasm', 'web/hls/master.m3u8'):
         if not os.path.exists(os.path.join(ROOT, needed)):
             sys.exit(f'missing {needed}: run ./build.sh (with ffmpeg installed) first')
     converter()
@@ -300,6 +327,7 @@ def main():
         unusable(url)
         fmp4_start_gap(url)
         links(url, other)
+        core_build(url)
         slow_network(url)
     finally:
         server.kill()

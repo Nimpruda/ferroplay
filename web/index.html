@@ -51,7 +51,10 @@
     startAt: [20, 'Start at 0:20 (Rust)'],
   };
   const params = new URLSearchParams(location.search);
-  let link = params.get('play') || 'hls/master.m3u8';
+  // `core=1` loads player-core.wasm, which has no Rust HLS engine: no hls checkbox, and an MP4 to start with.
+  const core = params.get('core') === '1';
+  if (core) delete PLUGINS.hls;
+  let link = params.get('play') || (core ? 'media/test.mp4' : 'hls/master.m3u8');
   let chosen = (params.get('plugins') ?? 'keyboard,gaps,hls,speed').split(',').filter(name => name in PLUGINS);
 
   const video = document.getElementById('main');
@@ -64,7 +67,7 @@
     const u = new URL(url, location.href);
     return u.origin !== location.origin && /\.m3u8$/i.test(u.pathname) ? `/proxy/${u.href}` : u.href;
   };
-  const remember = () => history.replaceState(null, '', '?' + new URLSearchParams({ play: link, plugins: chosen }));
+  const remember = () => history.replaceState(null, '', '?' + new URLSearchParams({ play: link, plugins: chosen, ...core && { core: 1 } }));
   const forget = () => video.removeEventListener('loadedmetadata', resume);
 
   // A new set of plugins means a new player. Same video and position; HLS reloads, so seek back.
@@ -143,7 +146,7 @@
     }
   }, () => catalog.insertAdjacentHTML('beforeend', '<p><small>No catalog yet: run <code>just catalog</code>.</small></p>'));
 
-  await init();
+  await init(core ? 'player-core.wasm' : undefined);
   form.play.value = params.get('play') ?? '';
   build();
   if (params.has('play')) p.play();
