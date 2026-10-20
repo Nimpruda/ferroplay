@@ -46,11 +46,11 @@ impl Player {
         let mut intents = Vec::new();
         match &event {
             Event::Do(intent) => {
-                // A new source: the old one's seekable window says nothing about it, and it starts from 0. Done
-                // here, before the plugins, because a plugin may take the load over (HLS does) and the intent
-                // never reaches State.
+                // A new source starts from a blank slate: nothing the old one said about its media holds for it.
+                // Done here, before the plugins, because a plugin may take the load over (HLS does) and the intent
+                // never reaches State; and so they decide from the new source's start, not the old playhead.
                 if let Intent::Load(_) = intent {
-                    (self.state.seekable, self.state.seeked) = (None, 0.0);
+                    self.state.reset_media();
                 }
                 intents.push(intent.clone());
             }

@@ -113,6 +113,14 @@ impl Default for State {
 }
 
 impl State {
+    /// Forgets what the last source said about its media, and keeps what belongs to the element: the new source
+    /// has not reported anything yet, and the element may never say the old values are gone (Firefox fires no
+    /// `durationchange` for a live Media Source that has no data yet).
+    pub(crate) fn reset_media(&mut self) {
+        let Self { volume, rate, paused, waiting, muted, fullscreen, .. } = *self;
+        *self = Self { volume, rate, paused, waiting, muted, fullscreen, ..Self::default() };
+    }
+
     pub fn apply(&mut self, fact: &Fact) {
         match *fact {
             Fact::Time(t) => self.time = t,

@@ -1,5 +1,5 @@
 use player::plugins::{AbLoop, Gaps, Keyboard, Loop, StartAt};
-use player::{Cmd, Event, Fact, Intent, Player, Ranges};
+use player::{Cmd, Event, Fact, Intent, Player, Ranges, State};
 
 fn loaded(duration: f64) -> Player {
     let mut p = Player::new().with(Keyboard { step: 5.0 });
@@ -160,8 +160,30 @@ fn live_progress_stays_on_the_bar_when_the_window_slides_past_the_playhead() {
 fn a_new_load_forgets_the_old_seekable_window() {
     let mut p = live((3600.0, 3624.0));
     p.dispatch(Event::Do(Intent::Load("https://cdn.test/other.m3u8".into())));
-    // Still live, but the new stream has not reported its window: nothing to map the number keys onto.
+    p.dispatch(Event::Saw(Fact::Duration(f64::INFINITY)));
+    // Live again, but the new stream has not reported its window: nothing to map the number keys onto.
     assert_eq!(p.dispatch(Event::Key('0')), []);
+}
+
+#[test]
+fn a_new_load_forgets_the_old_media_and_keeps_the_element_settings() {
+    let mut p = loaded(60.0);
+    let element = [Fact::Volume(0.4), Fact::Rate(1.5), Fact::Muted(true), Fact::Fullscreen(true), Fact::Playing];
+    let media = [Fact::Seeking(30.0), Fact::Buffered(Ranges(vec![(20.0, 40.0)])), Fact::Seekable(0.0, 60.0)];
+    for fact in element.into_iter().chain(media) {
+        p.dispatch(Event::Saw(fact));
+    }
+    p.dispatch(Event::Do(Intent::Load("https://cdn.test/other.mp4".into())));
+    assert_eq!(p.state, State { volume: 0.4, rate: 1.5, muted: true, fullscreen: true, paused: false, ..State::default() });
+}
+
+#[test]
+fn a_live_stream_loaded_over_a_vod_shows_just_its_clock() {
+    let mut p = loaded(52.2);
+    p.dispatch(Event::Saw(Fact::Time(545.0)));
+    p.dispatch(Event::Do(Intent::Load("https://cdn.test/live.m3u8".into())));
+    p.dispatch(Event::Saw(Fact::Duration(f64::INFINITY)));
+    assert_eq!(p.state.view().label, "0:00", "not the old playhead, nor the old total");
 }
 
 #[test]
@@ -289,6 +311,7 @@ fn a_new_load_starts_playback_over_for_start_gaps() {
     p.dispatch(Event::Saw(Fact::Seeking(30.0)));
     p.dispatch(Event::Saw(Fact::Time(31.0)));
     p.dispatch(Event::Do(Intent::Load("https://cdn.test/next.mp4".into())));
+    p.dispatch(Event::Saw(Fact::Duration(60.0)));
     p.dispatch(Event::Saw(Fact::Time(0.0)));
     assert_eq!(buffered(&mut p, &[(0.066, 2.086)]), [Cmd::Seek(0.066 + 0.1)]);
 }

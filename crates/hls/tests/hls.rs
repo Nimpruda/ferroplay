@@ -192,6 +192,14 @@ fn other_urls_go_to_the_media_element_and_stop_the_stream() {
 }
 
 #[test]
+fn a_vod_loaded_while_the_old_playhead_was_past_its_end_fetches_its_first_segment_at_once() {
+    let mut p = Player::new().with(Hls::default());
+    p.dispatch(Event::Saw(Fact::Time(500.0))); // the old source, a long video, was at 500 s
+    assert_eq!(p.dispatch(Event::Do(Intent::Load("https://cdn.test/short.m3u8".into()))), [fetch("https://cdn.test/short.m3u8")]);
+    assert_eq!(p.dispatch(loaded(window("s", 0, 3, 10.0).as_bytes())), [Cmd::Open(30.0), fetch("https://cdn.test/s0.ts")]);
+}
+
+#[test]
 fn a_quality_switch_loads_the_same_sequence_number() {
     let mut p = playing("https://cdn.test/v/master.m3u8");
     p.dispatch(loaded(MASTER.as_bytes()));

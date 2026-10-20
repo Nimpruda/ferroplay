@@ -105,7 +105,11 @@ export function player(video, plugins = {}) {
     fullscreen: f => settle(f ? root.requestFullscreen?.() : document.exitFullscreen?.()),
     source: (_, bytes) => {
       const url = utf8.decode(bytes); // absolute: see `load`
-      if (video.src !== url) video.src = url;
+      if (video.src !== url) return void (video.src = url);
+      // The same source (the one given in HTML, say) is not reloaded, so the element will not report again what
+      // the core forgot on the load: report it now.
+      lastBuffered = [];
+      ['emptied', 'durationchange', 'timeupdate'].forEach(type => media[type]());
     },
     warn: (_, bytes) => console.warn(utf8.decode(bytes)),
     // Playback has stopped: say why on the player, and to the page as an `error` event (detail: the message).
