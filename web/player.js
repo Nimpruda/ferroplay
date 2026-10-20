@@ -3,10 +3,10 @@
 const EVENTS = ['toggle', 'play', 'pause', 'seek', 'seekBy', 'seekFrac', 'volume', 'volumeBy',
   'toggleMute', 'toggleFullscreen', 'rate', 'key', 'time', 'duration', 'buffered', 'playing',
   'paused', 'ended', 'waiting', 'volumeChanged', 'muted', 'rateChanged', 'fullscreen',
-  'loaded', 'loadFailed', 'load', 'seekable'];
+  'loaded', 'loadFailed', 'load', 'seekable', 'seeking'];
 const CMDS = ['play', 'pause', 'seek', 'volume', 'muted', 'rate', 'fullscreen',
   'fetch', 'open', 'codec', 'append', 'remove', 'end', 'source', 'seekableRange', 'warn', 'fail'];
-const PLUGINS = ['keyboard', 'loop', 'startAt', 'abLoop', 'hls'];
+const PLUGINS = ['keyboard', 'loop', 'startAt', 'abLoop', 'hls', 'gaps'];
 // Tuning knobs, by name (the names are `Knob::name` in crates/hls). A knob's function gets the target
 // duration (seconds) or nothing; it returns the value, or nothing to keep the default. Names not listed here
 // throw when registered: a typo must not silently keep the default.
@@ -65,17 +65,22 @@ export async function init(url = new URL('player.wasm', import.meta.url)) {
   ({ instance: { exports: core } } = await WebAssembly.instantiateStreaming(fetch(url), { host }));
 }
 
+/** The plugins most pages want: `player(video, { ...defaults, hls })`, or `{ ...defaults, gaps: false }` without one. */
+export const defaults = { keyboard: 5, gaps: true };
+
 /**
  * Wraps a <video> with controls; play something with `.play(url)`. `plugins` maps a Rust plugin
  * name to its numeric argument, or any name to a JS plugin: `({ video, send, use, handle }) => cleanup?`.
+ * `false` leaves a plugin out. None are implied: see `defaults`.
  */
-export function player(video, plugins = { keyboard: 5 }) {
+export function player(video, plugins = {}) {
   const id = core.player_new();
   const send = (name, value = 0, bytes) => core.player_event(id, lookup(EVENTS, name), +value, ...pass(bytes));
   const use = (name, arg = 0) => core.player_use(id, lookup(PLUGINS, name), +arg);
   const jsPlugins = [];
   const tuners = new Map(); // knob name -> function
   for (const [name, arg] of Object.entries(plugins)) {
+    if (arg === false) continue;
     if (typeof arg === 'function') jsPlugins.push(arg);
     else use(name, arg);
   }
@@ -193,7 +198,7 @@ export function player(video, plugins = { keyboard: 5 }) {
   };
   const media = {
     timeupdate: () => { send('time', video.currentTime); buffered(); seekable(); },
-    seeking: () => send('time', video.currentTime), // no timeupdate until a seek has data
+    seeking: () => send('seeking', video.currentTime), // every seek, whoever asked; no timeupdate until it has data
     durationchange: () => { send('duration', video.duration); seekable(); },
     progress: () => { buffered(); seekable(); },
     emptied: () => { lastSeekable = undefined; buffered(); }, // a new source: report its window even if it matches

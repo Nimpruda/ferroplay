@@ -1,4 +1,4 @@
-// HLS playback: `player(video, { hls }).play('https://…/master.m3u8')`. To tune it, `hlsWith`
+// HLS playback: `player(video, { ...defaults, hls }).play('https://…/master.m3u8')`. To tune it, `hlsWith`
 // (below) takes functions of the target duration, e.g. `hlsWith({ ahead: target => 2 * target })`.
 // Browsers with built-in HLS need nothing: the URL becomes `video.src`. Elsewhere this turns on
 // the Rust `hls` plugin, which decides everything; this file only carries out its commands:

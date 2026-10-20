@@ -32,7 +32,7 @@ Design notes, measurements and the traps we hit: [docs/learnings/](docs/learning
 
 `http://127.0.0.1:8080` is a playground: paste a link (`.mp4` or `.m3u8`) and tick plugins on
 and off; the player is rebuilt in place and keeps its position. Both live in the page URL, so a
-setup can be shared: `/?play=https://…/master.m3u8&plugins=keyboard,hls,speed`.
+setup can be shared: `/?play=https://…/master.m3u8&plugins=keyboard,gaps,hls,speed`.
 
 Playlists from other sites go through the server's proxy (`/proxy/<url>`), which rewrites them
 so every segment does too. So links play even when their site sends no CORS headers.
@@ -83,19 +83,22 @@ Event ──▶ State.apply(fact) ──▶ plugins ──▶ Intents ──▶ 
 ```html
 <video id="v" src="https://…/master.m3u8"></video>
 <script type="module">
-  import { init, player } from './player.js';
+  import { init, player, defaults } from './player.js';
   import { speed } from './plugins/speed.js';
   import { hls } from './plugins/hls.js';
   await init();
-  const p = player(document.getElementById('v'), { keyboard: 5, abLoop: true, speed, hls });
+  const p = player(document.getElementById('v'), { ...defaults, abLoop: true, speed, hls });
   p.play('https://…/movie.mp4'); // switch source and play; also p.load(url), p.play(), p.pause()
   p.destroy();
 </script>
 ```
 
 A source set in HTML goes through the plugins like `p.load(url)` does, so `hls` picks up `.m3u8`.
+No plugin is implied: `defaults` is `{ keyboard: 5, gaps: true }`, and `false` leaves one out
+(`{ ...defaults, gaps: false }`).
 
-Rust plugins: `Keyboard { step }`, `Loop`, `StartAt::new(t)`, `AbLoop` (`player::plugins`), `Hls`.
+Rust plugins: `Keyboard { step }`, `Gaps { start, hole }` (jumps the small gaps in the buffer that
+the element would wait at), `Loop`, `StartAt::new(t)`, `AbLoop` (`player::plugins`), `Hls`.
 JS plugins are functions `({ root, video, send, use, handle, load, play, pause }) => cleanup?`:
 
 - `send(event, value, bytes?)` reports to the core,
@@ -147,6 +150,7 @@ only) then checks, with our server:
 - every segment converts and ffmpeg decodes it,
 - HLS content types, and the proxy rewriting playlists,
 - in Firefox and Chrome (Rust engine and Chrome's own HLS): start, quality climb, seek, end, no errors,
+- in Firefox and Chrome, the fMP4 fixtures (a buffer that starts at 66 ms) play to the end,
 - a cross-origin playlist link without CORS plays via the proxy, plugin checkboxes rebuild the
   player and keep the position, the paste box plays an MP4 link,
 - at a throttled 0.6 Mbit/s, playback stays on 240p and keeps going.

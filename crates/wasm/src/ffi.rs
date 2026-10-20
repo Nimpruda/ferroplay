@@ -4,7 +4,7 @@
 use alloc::{borrow::Cow, boxed::Box, string::String, vec, vec::Vec};
 use core::cell::RefCell;
 use hls::Hls;
-use player::plugins::{AbLoop, Keyboard, Loop, StartAt};
+use player::plugins::{AbLoop, Gaps, Keyboard, Loop, StartAt};
 use player::{Cmd, Event, Fact, Intent, Player, Ranges};
 
 #[global_allocator]
@@ -83,6 +83,7 @@ pub extern "C" fn player_use(id: u32, plugin: u32, arg: f64) {
             let answer = unsafe { tune(id, name.as_ptr(), name.len(), value) };
             (!answer.is_nan()).then_some(answer)
         })),
+        5 => p.add(Gaps::default()),
         _ => {}
     });
 }
@@ -136,6 +137,7 @@ fn decode(code: u32, v: f64, data: Vec<u8>) -> Option<Event> {
         25 => Do(I::Load(String::from_utf8(data).ok()?)),
         // The end of the range travels in the bytes, as 8 little-endian bytes (see `encode`).
         26 => Saw(F::Seekable(v, f64::from_le_bytes(data.as_slice().try_into().ok()?))),
+        27 => Saw(F::Seeking(v)),
         _ => return None,
     })
 }

@@ -4,6 +4,7 @@ Chrome. Python stdlib only.
 
     ./build.sh && python3 e2e/run.py
 """
+import contextlib
 import glob
 import os
 import shutil
@@ -95,7 +96,7 @@ def server_checks(url, other):
 
 
 def playback(name, b, url, engine):
-    open_page(b, url + '?plugins=keyboard,hls')
+    open_page(b, url + '?plugins=keyboard,gaps,hls')
     playing = until(b, f"{V}.currentTime > 2", 20)
     s = state(b)
     via = 'blob' if engine else 'http'
@@ -215,30 +216,59 @@ def live(url):
         shutil.rmtree(live_dir, ignore_errors=True)
 
 
+@contextlib.contextmanager
+def served_playlist(name, playlist, fixtures=()):
+    """Serves `playlist` (and copies of these fixtures) from web/hls/<name>/ while in use; yields its path."""
+    folder = os.path.join(ROOT, 'web/hls', name)
+    os.makedirs(folder, exist_ok=True)
+    for fixture in fixtures:
+        shutil.copy(os.path.join(ROOT, 'fixtures', fixture), folder)
+    Path(folder, 'list.m3u8').write_text(playlist)
+    try:
+        yield f'hls/{name}/list.m3u8'
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)
+
+
 def unusable(url):
     """Segments that are not MPEG-TS (the playlist itself, here): each one is warned about, and after three the
     player stops and shows why, instead of a frozen frame."""
-    folder = os.path.join(ROOT, 'web/hls/unusable-e2e')
-    os.makedirs(folder, exist_ok=True)
-    Path(folder, 'list.m3u8').write_text('#EXTM3U\n#EXT-X-TARGETDURATION:2\n' + '#EXTINF:2,\n../master.m3u8\n' * 5 + '#EXT-X-ENDLIST\n')
-    b = Chrome(init_script=HIDE_NATIVE_HLS)
-    try:
-        open_page(b, url + '?play=hls/unusable-e2e/list.m3u8&plugins=hls', play=False)
-        shown = until(b, "document.querySelector('.vp').dataset.error", 15)
-        error = b.js("document.querySelector('.vp').dataset.error")
-        check('chrome: unusable segments stop playback and say why on the player',
-              shown and 'no MPEG-TS media' in error, error)
-        warnings = [log for log in b.logs if 'no MPEG-TS media' in log]
-        check('chrome: each unusable segment is warned about in the console', len(warnings) >= 3, b.logs)
-    finally:
-        b.close()
-        shutil.rmtree(folder, ignore_errors=True)
+    playlist = '#EXTM3U\n#EXT-X-TARGETDURATION:2\n' + '#EXTINF:2,\n../master.m3u8\n' * 5 + '#EXT-X-ENDLIST\n'
+    with served_playlist('unusable-e2e', playlist) as path:
+        b = Chrome(init_script=HIDE_NATIVE_HLS)
+        try:
+            open_page(b, f'{url}?play={path}&plugins=hls', play=False)
+            shown = until(b, "document.querySelector('.vp').dataset.error", 15)
+            error = b.js("document.querySelector('.vp').dataset.error")
+            check('chrome: unusable segments stop playback and say why on the player',
+                  shown and 'no MPEG-TS media' in error, error)
+            warnings = [log for log in b.logs if 'no MPEG-TS media' in log]
+            check('chrome: each unusable segment is warned about in the console', len(warnings) >= 3, b.logs)
+        finally:
+            b.close()
+
+
+def fmp4_start_gap(url):
+    """ffmpeg's fMP4 fixtures as a VOD: its first frame is at 66 ms (B-frames), and Media Source ignores the edit
+    list that hides it, so the buffer starts after 0. With the gaps plugin it plays to the end everywhere."""
+    playlist = ('#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-TARGETDURATION:1\n#EXT-X-MAP:URI="fmp4-init.mp4"\n'
+                '#EXTINF:1,\nfmp4-0.m4s\n#EXTINF:1,\nfmp4-1.m4s\n#EXT-X-ENDLIST\n')
+    with served_playlist('fmp4-e2e', playlist, ('fmp4-init.mp4', 'fmp4-0.m4s', 'fmp4-1.m4s')) as path:
+        for name, browser in (('firefox', Firefox), ('chrome', lambda: Chrome(init_script=HIDE_NATIVE_HLS))):
+            b = browser()
+            try:
+                open_page(b, f'{url}?play={path}&plugins=gaps,hls', play=False)
+                ended, s = until(b, f"{V}.ended", 20), state(b)
+                check(f'{name}: an fMP4 stream whose buffer starts after 0 plays to the end', ended and not s['error'] and not b.logs,
+                      f'{s}, {b.logs}')
+            finally:
+                b.close()
 
 
 def slow_network(url):
     b = Chrome(init_script=HIDE_NATIVE_HLS)
     b.throttle(0.6)
-    open_page(b, url + '?plugins=keyboard,hls')
+    open_page(b, url + '?plugins=keyboard,gaps,hls')
     time.sleep(20)
     fetched, s = qualities(b), state(b)
     check('chrome at 0.6 Mbit/s: stays on 240p and keeps playing', set(fetched) == {'240p'} and s['t'] > 8 and not s['paused'],
@@ -268,6 +298,7 @@ def main():
         playback('chrome (built-in HLS)', Chrome(), url, engine=False)
         live(url)
         unusable(url)
+        fmp4_start_gap(url)
         links(url, other)
         slow_network(url)
     finally:

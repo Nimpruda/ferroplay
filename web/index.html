@@ -36,13 +36,14 @@
 <section id="catalog"><h2>Test media catalog</h2></section>
 
 <script type="module">
-  import { init, player } from './player.js';
+  import { init, player, defaults } from './player.js';
   import { speed } from './plugins/speed.js';
   import { hls } from './plugins/hls.js';
 
   // name: [what the player gets (a number for Rust plugins, a function for JS ones), label]
   const PLUGINS = {
-    keyboard: [5, 'Keyboard shortcuts (Rust)'],
+    keyboard: [defaults.keyboard, 'Keyboard shortcuts (Rust)'],
+    gaps: [defaults.gaps, 'Jump small gaps in the buffer (Rust)'],
     hls: [hls, 'HLS: Rust engine where the browser has none (Rust + JS)'],
     speed: [speed, 'Speed button (JS)'],
     abLoop: [1, 'A-B loop: a marks a start, b an end, b again stops (Rust)'],
@@ -51,7 +52,7 @@
   };
   const params = new URLSearchParams(location.search);
   let link = params.get('play') || 'hls/master.m3u8';
-  let chosen = (params.get('plugins') ?? 'keyboard,hls,speed').split(',').filter(name => name in PLUGINS);
+  let chosen = (params.get('plugins') ?? 'keyboard,gaps,hls,speed').split(',').filter(name => name in PLUGINS);
 
   const video = document.getElementById('main');
   const form = document.getElementById('open');

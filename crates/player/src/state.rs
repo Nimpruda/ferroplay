@@ -5,6 +5,8 @@ use alloc::{string::String, vec::Vec};
 #[derive(Clone, Debug, PartialEq)]
 pub enum Fact {
     Time(f64),
+    /// The media element started a seek to this time, whoever asked for it.
+    Seeking(f64),
     Duration(f64),
     /// Every buffered range of the media element.
     Buffered(Ranges),
@@ -88,6 +90,8 @@ pub struct State {
     pub fullscreen: bool,
     /// The seekable range the host last reported, if any.
     pub seekable: Option<(f64, f64)>,
+    /// Where the last seek or load left the playhead: playback has moved once `time` is past it.
+    pub seeked: f64,
 }
 
 impl Default for State {
@@ -103,6 +107,7 @@ impl Default for State {
             muted: false,
             fullscreen: false,
             seekable: None,
+            seeked: 0.0,
         }
     }
 }
@@ -111,6 +116,7 @@ impl State {
     pub fn apply(&mut self, fact: &Fact) {
         match *fact {
             Fact::Time(t) => self.time = t,
+            Fact::Seeking(t) => (self.time, self.seeked) = (t, t),
             // An infinite duration is a live stream: keep it, and seek within the seekable window instead.
             Fact::Duration(d) => self.duration = if d.is_nan() { 0.0 } else { d },
             Fact::Buffered(ref ranges) => self.buffered = ranges.clone(),

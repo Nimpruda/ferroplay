@@ -434,7 +434,7 @@ impl Plugin for Hls {
         let mut cmds = Vec::new();
         let was_live = self.live;
         // The element reports 0 until it has seeked to the hold-back: any other time means it has.
-        if let Event::Saw(Fact::Time(t)) = event && *t > 0.0 {
+        if let Event::Saw(Fact::Time(t) | Fact::Seeking(t)) = event && *t > 0.0 {
             self.start_at = None;
         }
         match event {

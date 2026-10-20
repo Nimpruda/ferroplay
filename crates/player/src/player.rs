@@ -46,10 +46,11 @@ impl Player {
         let mut intents = Vec::new();
         match &event {
             Event::Do(intent) => {
-                // A new source: the old one's seekable window says nothing about it. Done here, before the
-                // plugins, because a plugin may take the load over (HLS does) and the intent never reaches State.
+                // A new source: the old one's seekable window says nothing about it, and it starts from 0. Done
+                // here, before the plugins, because a plugin may take the load over (HLS does) and the intent
+                // never reaches State.
                 if let Intent::Load(_) = intent {
-                    self.state.seekable = None;
+                    (self.state.seekable, self.state.seeked) = (None, 0.0);
                 }
                 intents.push(intent.clone());
             }

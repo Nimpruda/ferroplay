@@ -324,10 +324,10 @@ fn a_live_stream_starts_three_target_durations_from_its_end() {
 fn seeking_anywhere_in_the_window_plays_from_there() {
     let mut p = playing(LIVE);
     p.dispatch(loaded(live_window_4s_target(10).as_bytes()));
-    // The element reports the hold-back once it has seeked: from then on the playhead decides.
-    assert_eq!(p.dispatch(Event::Saw(Fact::Time(8.0))), [], "segment 4 is already on its way");
+    // The element reports the seek to the hold-back: from then on the playhead decides.
+    assert_eq!(p.dispatch(Event::Saw(Fact::Seeking(8.0))), [], "segment 4 is already on its way");
     // The user seeks to 15 s: segment 7 (14–16 s) is loaded next.
-    assert_eq!(p.dispatch(Event::Saw(Fact::Time(15.0))), [fetch("https://cdn.test/s7.ts")]);
+    assert_eq!(p.dispatch(Event::Saw(Fact::Seeking(15.0))), [fetch("https://cdn.test/s7.ts")]);
 }
 
 #[test]

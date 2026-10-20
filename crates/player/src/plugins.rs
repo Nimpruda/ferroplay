@@ -56,9 +56,44 @@ impl Plugin for AbLoop {
                 self.b = Some(state.time);
                 out.push(Intent::Seek(a));
             }
-            (&Event::Saw(Fact::Time(t)), Some(a), Some(b)) if t >= b => out.push(Intent::Seek(a)),
+            (&Event::Saw(Fact::Time(t) | Fact::Seeking(t)), Some(a), Some(b)) if t >= b => out.push(Intent::Seek(a)),
             _ => {}
         }
+    }
+}
+
+/// Jumps a gap in the buffer that the media element would wait at forever, as hls.js's gap controller does.
+/// Until playback has moved since the last load or seek, a gap of up to `start` seconds: media that starts a
+/// little late (B-frames, say). After that, only a hole of up to `hole` seconds: a larger one is data still to
+/// come, for the source plugin to fetch.
+pub struct Gaps {
+    pub start: f64,
+    pub hole: f64,
+}
+
+impl Default for Gaps {
+    fn default() -> Self {
+        Self { start: 2.0, hole: 0.1 }
+    }
+}
+
+impl Plugin for Gaps {
+    fn on(&mut self, state: &State, event: &Event, out: &mut Vec<Intent>) {
+        // Stuck: waiting to play, and asked again when new data comes in.
+        if !matches!(event, Event::Saw(Fact::Waiting | Fact::Buffered(_))) || !state.waiting || state.paused {
+            return;
+        }
+        let t = state.time;
+        let Some((next, end)) = state.buffered.next_after(t) else { return };
+        // Nothing, or next to nothing, left to play here: buffered media under the playhead is never skipped.
+        let starved = state.buffered.end_at(t).is_none_or(|end| end - t <= self.hole);
+        let most = if t > state.seeked { self.hole } else { self.start };
+        if !starved || next - t > most {
+            return;
+        }
+        // A little into the range (hls.js's skipBufferHolePadding), so the element is clear of the gap. The seek
+        // updates `time` at once, so the same gap is not jumped twice.
+        out.push(Intent::Seek((next + 0.1).min(end)));
     }
 }
 

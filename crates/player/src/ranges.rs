@@ -23,8 +23,8 @@ impl Ranges {
         self.0.iter().find(|&&(start, end)| start <= t && t <= end).map(|&(_, end)| end)
     }
 
-    /// The start of the first range after `t`.
-    pub fn next_start(&self, t: f64) -> Option<f64> {
-        self.0.iter().map(|&(start, _)| start).find(|&start| start > t)
+    /// The first range that starts after `t`.
+    pub fn next_after(&self, t: f64) -> Option<(f64, f64)> {
+        self.0.iter().find(|&&(start, _)| start > t).copied()
     }
 }

@@ -1,4 +1,4 @@
-use player::plugins::{AbLoop, Keyboard, Loop, StartAt};
+use player::plugins::{AbLoop, Gaps, Keyboard, Loop, StartAt};
 use player::{Cmd, Event, Fact, Intent, Player, Ranges};
 
 fn loaded(duration: f64) -> Player {
@@ -77,6 +77,7 @@ fn ab_loop_repeats_a_section_until_b_is_pressed_again() {
     assert_eq!(p.dispatch(Event::Key('b')), [Cmd::Seek(10.0)]);
     assert_eq!(p.dispatch(Event::Saw(Fact::Time(12.0))), []);
     assert_eq!(p.dispatch(Event::Saw(Fact::Time(14.1))), [Cmd::Seek(10.0)]);
+    assert_eq!(p.dispatch(Event::Saw(Fact::Seeking(30.0))), [Cmd::Seek(10.0)], "a seek past b, at once");
     p.dispatch(Event::Key('b'));
     assert_eq!(p.dispatch(Event::Saw(Fact::Time(14.1))), []);
 }
@@ -182,11 +183,11 @@ fn ranges_answer_where_a_time_is_and_what_comes_next() {
     let r = Ranges(vec![(0.066, 2.0), (2.05, 4.0)]);
     assert_eq!(r.end_at(1.0), Some(2.0));
     assert_eq!(r.end_at(0.0), None, "before the first range");
-    assert_eq!(r.next_start(0.0), Some(0.066));
-    assert_eq!(r.next_start(2.0), Some(2.05));
-    assert_eq!(r.next_start(2.05), None, "a range that starts at t is not after it");
+    assert_eq!(r.next_after(0.0), Some((0.066, 2.0)));
+    assert_eq!(r.next_after(2.0), Some((2.05, 4.0)));
+    assert_eq!(r.next_after(2.05), None, "a range that starts at t is not after it");
     assert_eq!(Ranges::default().end_at(0.0), None);
-    assert_eq!(Ranges::default().next_start(0.0), None);
+    assert_eq!(Ranges::default().next_after(0.0), None);
 }
 
 #[test]
@@ -197,4 +198,97 @@ fn ranges_come_from_the_hosts_bytes_or_not_at_all() {
     for len in [8, 15, 17, 24] {
         assert_eq!(Ranges::from_le_bytes(&bytes[..len]), None, "{len} bytes");
     }
+}
+
+/// Playing a 60 s video with the default gap jumper, waiting for data at `t`.
+fn waiting_at(t: f64) -> Player {
+    waiting_with(Gaps::default(), t)
+}
+
+fn waiting_with(gaps: Gaps, t: f64) -> Player {
+    let mut p = loaded(60.0).with(gaps);
+    p.dispatch(Event::Saw(Fact::Time(t)));
+    p.dispatch(Event::Saw(Fact::Playing));
+    p.dispatch(Event::Saw(Fact::Waiting));
+    p
+}
+
+fn buffered(p: &mut Player, ranges: &[(f64, f64)]) -> Vec<Cmd> {
+    p.dispatch(Event::Saw(Fact::Buffered(Ranges(ranges.to_vec()))))
+}
+
+#[test]
+fn gaps_jump_a_start_gap_a_little_into_the_next_range() {
+    // ffmpeg's fMP4: the first frame is at 66 ms, and Media Source ignores the edit list that hides the gap.
+    assert_eq!(buffered(&mut waiting_at(0.0), &[(0.066, 2.086)]), [Cmd::Seek(0.066 + 0.1)]);
+    assert_eq!(buffered(&mut waiting_at(0.0), &[(1.5, 10.0)]), [Cmd::Seek(1.5 + 0.1)], "up to 2 s");
+    assert_eq!(buffered(&mut waiting_at(0.0), &[(1.0, 1.05)]), [Cmd::Seek(1.05)], "not past the range");
+    assert_eq!(buffered(&mut waiting_at(0.0), &[(2.5, 10.0)]), [], "longer than 2 s");
+    let mut p = waiting_with(Gaps { start: 3.0, hole: 0.1 }, 0.0);
+    assert_eq!(buffered(&mut p, &[(2.5, 10.0)]), [Cmd::Seek(2.5 + 0.1)], "a longer start, set by hand");
+}
+
+#[test]
+fn gaps_are_jumped_on_waiting_once_the_data_is_in() {
+    let mut p = loaded(60.0).with(Gaps::default());
+    p.dispatch(Event::Saw(Fact::Playing));
+    assert_eq!(buffered(&mut p, &[(0.5, 10.0)]), [], "not waiting yet");
+    assert_eq!(p.dispatch(Event::Saw(Fact::Waiting)), [Cmd::Seek(0.5 + 0.1)]);
+}
+
+#[test]
+fn gaps_never_skip_media_buffered_under_the_playhead() {
+    assert_eq!(buffered(&mut waiting_at(0.0), &[(0.0, 1.0), (1.5, 10.0)]), []);
+}
+
+#[test]
+fn after_playback_has_moved_gaps_jump_only_small_holes() {
+    assert_eq!(buffered(&mut waiting_at(5.0), &[(0.0, 4.98), (5.05, 10.0)]), [Cmd::Seek(5.05 + 0.1)], "in no range");
+    assert_eq!(buffered(&mut waiting_at(4.95), &[(0.0, 5.0), (5.04, 10.0)]), [Cmd::Seek(5.04 + 0.1)], "at the end of one");
+    assert_eq!(buffered(&mut waiting_at(5.0), &[(0.0, 5.0), (5.5, 10.0)]), [], "the source fills larger holes");
+}
+
+#[test]
+fn gaps_do_nothing_while_paused_playing_or_with_nothing_ahead() {
+    let mut p = waiting_at(0.0);
+    p.dispatch(Event::Saw(Fact::Paused));
+    p.dispatch(Event::Saw(Fact::Waiting));
+    assert_eq!(buffered(&mut p, &[(0.5, 10.0)]), [], "paused");
+    let mut p = waiting_at(0.0);
+    p.dispatch(Event::Saw(Fact::Playing));
+    assert_eq!(buffered(&mut p, &[(0.5, 10.0)]), [], "playing");
+    assert_eq!(buffered(&mut waiting_at(12.0), &[(0.0, 10.0)]), [], "nothing after the playhead");
+}
+
+#[test]
+fn gaps_jump_each_gap_once() {
+    let mut p = waiting_at(0.0);
+    assert_eq!(buffered(&mut p, &[(0.5, 10.0)]), [Cmd::Seek(0.5 + 0.1)]);
+    // Still waiting while the element seeks, and more data comes in: the playhead is past the gap already.
+    assert_eq!(p.dispatch(Event::Saw(Fact::Waiting)), []);
+    assert_eq!(buffered(&mut p, &[(0.5, 12.0)]), []);
+    assert_eq!(p.dispatch(Event::Saw(Fact::Seeking(0.6))), []);
+    assert_eq!(buffered(&mut p, &[(0.5, 14.0)]), []);
+}
+
+#[test]
+fn any_seek_starts_playback_over_for_start_gaps() {
+    let ranges = [(0.0, 30.5), (41.0, 50.0)];
+    // Played on to 40 s: a 1 s gap is missing data, for the source to fetch.
+    assert_eq!(buffered(&mut waiting_at(40.0), &ranges), []);
+    // Seeked to 40 s, from the UI, a plugin or the browser: the media there starts a little late.
+    let mut p = waiting_at(30.0);
+    p.dispatch(Event::Saw(Fact::Seeking(40.0)));
+    assert_eq!(p.state.time, 40.0, "a seek moves the playhead as a time update does");
+    assert_eq!(buffered(&mut p, &ranges), [Cmd::Seek(41.0 + 0.1)]);
+}
+
+#[test]
+fn a_new_load_starts_playback_over_for_start_gaps() {
+    let mut p = waiting_at(0.0);
+    p.dispatch(Event::Saw(Fact::Seeking(30.0)));
+    p.dispatch(Event::Saw(Fact::Time(31.0)));
+    p.dispatch(Event::Do(Intent::Load("https://cdn.test/next.mp4".into())));
+    p.dispatch(Event::Saw(Fact::Time(0.0)));
+    assert_eq!(buffered(&mut p, &[(0.066, 2.086)]), [Cmd::Seek(0.066 + 0.1)]);
 }
