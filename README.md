@@ -23,7 +23,8 @@ docker build --target ts2mp4 -t ts2mp4 . && docker run --rm -i ts2mp4 < seg.ts >
 ```
 
 The `Dockerfile` compiles dependencies in their own layer (cargo-chef), so a source change only
-rebuilds our crates. Media made by the containers lands in `web/hls` and `web/media`, as natively.
+rebuilds our crates. Media made by the containers lands in `web/hls`, `web/media` and `web/catalog`,
+as natively.
 
 Design notes, measurements and the traps we hit: [docs/learnings/](docs/learnings/README.md).
 
@@ -35,6 +36,18 @@ setup can be shared: `/?play=https://…/master.m3u8&plugins=keyboard,hls,speed`
 
 Playlists from other sites go through the server's proxy (`/proxy/<url>`), which rewrites them
 so every segment does too. So links play even when their site sends no CORS headers.
+
+## Test media catalog
+
+`./make-catalog.sh` (`just catalog`) writes test media to `web/catalog/`, a folder per entry, made
+from a synthetic test pattern with a tone or from a cut of the Sintel trailer. `build.sh` and the
+docker media service make it when it is missing or older than the script.
+`web/catalog/catalog.json` says what each entry is, what it should do in Firefox and Chrome (play
+to the end, or fail with a message); `make-catalog.sh` says
+how to add an entry and documents the fields.
+
+The page lists the entries under the player, grouped by axis; a click plays one with the ticked
+plugins. It is for checks by hand: the e2e tests keep their own.
 
 ## Crates
 

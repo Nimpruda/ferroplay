@@ -3,5 +3,6 @@ target
 web/player.wasm
 web/hls
 web/media
+web/catalog
 **/__pycache__
 .envrc

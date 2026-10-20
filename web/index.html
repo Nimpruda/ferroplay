@@ -14,7 +14,11 @@
   a { color: #8bf; }
   kbd { background: #222; padding: 1px 5px; border-radius: 3px; }
   .samples { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0 0; }
-  .samples button { background: #2a2a2a; color: #ddd; border: 1px solid #444; }
+  .samples button, #catalog button { background: #2a2a2a; color: #ddd; border: 1px solid #444; }
+  #catalog h3 { margin: 16px 0 6px; font-size: inherit; text-transform: capitalize; }
+  #catalog ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+  #catalog li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; }
+  #catalog button { padding: 4px 10px; }
 </style>
 
 <h1>Rust + WASM video player</h1>
@@ -29,6 +33,7 @@
   <kbd>↑</kbd><kbd>↓</kbd> volume, <kbd>m</kbd> mute, <kbd>f</kbd> fullscreen, <kbd>0</kbd>–<kbd>9</kbd> jump, <kbd>&lt;</kbd><kbd>&gt;</kbd> speed.
   The link and plugins live in the page URL, so a setup can be shared.
   Default video: Sintel trailer © Blender Foundation, <a href="https://www.blender.org">blender.org</a>, CC-BY 3.0.</small></p>
+<section id="catalog"><h2>Test media catalog</h2></section>
 
 <script type="module">
   import { init, player } from './player.js';
@@ -115,6 +120,27 @@
     button.addEventListener('click', () => openLink(url));
     samples.append(button);
   }
+
+  // The test media catalog (make-catalog.sh), grouped by axis: each entry with what it should do in
+  // each browser. A click plays it with the plugins ticked.
+  const catalog = document.getElementById('catalog');
+  fetch('catalog/catalog.json').then(r => r.ok ? r.json() : Promise.reject(r.status)).then(entries => {
+    for (const [axis, group] of Object.entries(Object.groupBy(entries, e => e.axis))) {
+      const list = document.createElement('ul');
+      catalog.append(Object.assign(document.createElement('h3'), { textContent: axis }), list);
+      for (const e of group) {
+        const button = Object.assign(document.createElement('button'), { type: 'button', textContent: e.title });
+        button.addEventListener('click', () => { openLink(`${here}/${e.url}`); video.scrollIntoView(); });
+        const expect = Object.entries(e.expect).map(([browser, outcome]) =>
+          `${browser[0].toUpperCase()}${browser.slice(1)}: ${outcome === 'ends' ? 'plays to the end' : outcome}`);
+        const about = [e.feature ?? e.fault, `${e.delivery}, ${e.container}, ${e.codecs.join(' + ')}, ${e.source}`,
+          ...expect].filter(Boolean).join(' · ');
+        const item = document.createElement('li');
+        item.append(button, Object.assign(document.createElement('small'), { textContent: about }));
+        list.append(item);
+      }
+    }
+  }, () => catalog.insertAdjacentHTML('beforeend', '<p><small>No catalog yet: run <code>just catalog</code>.</small></p>'));
 
   await init();
   form.play.value = params.get('play') ?? '';

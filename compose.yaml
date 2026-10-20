@@ -1,5 +1,5 @@
 # Dev stack: `just up` (server + demo media), `just up-live` adds a live stream. See the justfile.
-# Generated media lands in the repo's web/hls and web/media, shared with the native workflow.
+# Generated media lands in the repo's web/hls, web/media and web/catalog, shared with the native workflow.
 
 x-media: &media
   build: { context: ., target: media }
@@ -16,6 +16,7 @@ services:
     volumes:
       - ./web/hls:/app/web/hls:ro
       - ./web/media:/app/web/media:ro
+      - ./web/catalog:/app/web/catalog:ro
     depends_on:
       media: { condition: service_completed_successfully }
 

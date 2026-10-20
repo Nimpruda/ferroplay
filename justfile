@@ -45,6 +45,11 @@ hls:
 media:
     ./make-media.sh
 
+# Remake the test media catalog in web/catalog (listed on the demo page)
+[group('native')]
+catalog:
+    ./make-catalog.sh
+
 # Live stream in web/hls/live until Ctrl-C: a test pattern, or a clip on a loop
 [group('native')]
 live *clip:
