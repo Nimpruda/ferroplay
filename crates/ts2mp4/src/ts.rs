@@ -193,23 +193,24 @@ fn audio(list: &[Vec<u8>]) -> Option<Audio> {
         stream.extend_from_slice(payload);
     }
     let start = start?;
-    let (mut i, mut audio) = (0, None);
+    let (mut i, mut audio) = (0, None::<Audio>);
     while let Some(h) = stream.get(i..i + 7) {
         if h[0] != 0xff || h[1] & 0xf0 != 0xf0 {
             i += 1; // resync on the next ADTS header
             continue;
         }
+        let (object, freq, channels) = ((h[2] >> 6) + 1, (h[2] >> 2) & 15, (h[2] & 1) << 2 | h[3] >> 6);
+        let config = [object << 3 | freq >> 1, (freq & 1) << 7 | channels << 3];
+        // A reserved rate, or a config other than the first frame's, means a corrupt byte passed for a sync word:
+        // resync past it rather than drop the whole track or mix two configs in it.
+        let Some(&rate) = RATES.get(usize::from(freq)).filter(|_| audio.as_ref().is_none_or(|a| a.config == config)) else {
+            i += 1;
+            continue;
+        };
         let len = usize::from(h[3] & 3) << 11 | usize::from(h[4]) << 3 | usize::from(h[5] >> 5);
         let header = if h[1] & 1 == 1 { 7 } else { 9 };
         let Some(frame) = stream.get(i + header..i + len) else { break };
-        let (object, freq, channels) = ((h[2] >> 6) + 1, (h[2] >> 2) & 15, (h[2] & 1) << 2 | h[3] >> 6);
-        let rate = *RATES.get(usize::from(freq))?;
-        let a = audio.get_or_insert_with(|| Audio {
-            config: [object << 3 | freq >> 1, (freq & 1) << 7 | channels << 3],
-            rate,
-            channels,
-            samples: Vec::new(),
-        });
+        let a = audio.get_or_insert_with(|| Audio { config, rate, channels, samples: Vec::new() });
         let pts = start + a.samples.len() as i64 * 1024 * 90_000 / i64::from(a.rate);
         a.samples.push(Sample { pts, dts: pts, key: true, data: frame.to_vec() });
         i += len;
@@ -326,5 +327,42 @@ impl Bits<'_> {
                 last = next;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::vec;
+
+    /// An 8-byte ADTS frame (no CRC) of AAC object type `object`, rate index `freq` and `channels`, with a one-byte payload.
+    fn adts(object: u8, freq: u8, channels: u8, payload: u8) -> [u8; 8] {
+        [0xff, 0xf1, (object - 1) << 6 | freq << 2 | channels >> 2, (channels & 3) << 6, 1, 0x1f, 0xfc, payload]
+    }
+
+    /// One PES packet with PTS 0 carrying `frames`.
+    fn packet(frames: &[[u8; 8]]) -> Vec<u8> {
+        let mut packet = vec![0, 0, 1, 0xc0, 0, 0, 0x80, 0x80, 5, 0x21, 0, 1, 0, 1];
+        packet.extend(frames.iter().flatten());
+        packet
+    }
+
+    fn payloads(audio: &Audio) -> Vec<u8> {
+        audio.samples.iter().flat_map(|s| s.data.iter().copied()).collect()
+    }
+
+    #[test]
+    fn a_header_with_a_reserved_rate_is_skipped_and_the_other_frames_kept() {
+        let audio = audio(&[packet(&[adts(2, 4, 2, 1), adts(2, 13, 2, 2), adts(2, 4, 2, 3), adts(2, 15, 2, 4), adts(2, 4, 2, 5)])]).unwrap();
+        assert_eq!((audio.rate, audio.channels), (44100, 2));
+        assert_eq!(payloads(&audio), [1, 3, 5]);
+    }
+
+    #[test]
+    fn a_frame_with_another_object_type_rate_or_channel_count_than_the_first_is_skipped() {
+        let frames = [adts(2, 4, 2, 1), adts(1, 4, 2, 2), adts(2, 3, 2, 3), adts(2, 4, 1, 4), adts(2, 4, 2, 5)];
+        let audio = audio(&[packet(&frames)]).unwrap();
+        assert_eq!((audio.config, audio.rate, audio.channels), ([0x12, 0x10], 44100, 2));
+        assert_eq!(payloads(&audio), [1, 5]);
     }
 }
