@@ -215,10 +215,11 @@ impl Hls {
     /// Handles a finished download; why it cannot be used, if it cannot. The bytes are ours: a segment moves on to
     /// `Cmd::Append` without a copy.
     fn receive(&mut self, request: Request, ms: f64, data: Vec<u8>, out: &mut Vec<Cmd>) -> Result<(), Failure> {
-        let text = core::str::from_utf8(&data).unwrap_or_default();
+        // Only playlists are text: a segment is not scanned for UTF-8.
+        let text = || core::str::from_utf8(&data).unwrap_or_default();
         match request {
             Request::Master => {
-                self.variants = playlist::variants(text, &self.url);
+                self.variants = playlist::variants(text(), &self.url);
                 if self.variants.is_empty() {
                     // Not a master playlist: the URL is the one and only media playlist.
                     self.variants.push(Variant { bandwidth: 0, uri: self.url.clone(), segments: Vec::new() });
@@ -226,7 +227,7 @@ impl Hls {
                 }
             }
             Request::Playlist(v) | Request::Reload(v, _) => {
-                let media = playlist::media(text, &self.variants[v].uri);
+                let media = playlist::media(text(), &self.variants[v].uri);
                 let (live, target, mut segments) = (media.live(), media.target_duration, media.segments);
                 if segments.is_empty() {
                     // e.g. an error page: counts as a failed download

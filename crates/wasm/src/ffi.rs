@@ -1,7 +1,7 @@
 //! The wasm bridge: every call carries a code, a number, and optional bytes as (pointer, length).
 //! The only `unsafe` in the workspace. Event, command and plugin codes must match `web/player.js`.
 
-use alloc::{borrow::Cow, boxed::Box, string::String, vec, vec::Vec};
+use alloc::{borrow::Cow, boxed::Box, string::String, vec::Vec};
 use core::cell::RefCell;
 #[cfg(feature = "hls")]
 use hls::Hls;
@@ -54,17 +54,19 @@ fn with<R>(id: u32, f: impl FnOnce(&mut Player) -> R) -> Option<R> {
     slot(id, |s| f(&mut s.player))
 }
 
-/// A buffer for the host to fill. Ownership comes back with `player_event`.
+/// A buffer for the host to fill. Ownership comes back with `player_event`. Not zeroed: the host writes every
+/// byte of it before handing it back, so zeroes would only be overwritten.
 #[unsafe(no_mangle)]
 pub extern "C" fn player_alloc(len: usize) -> *mut u8 {
-    Box::into_raw(vec![0u8; len].into_boxed_slice()).cast()
+    Box::into_raw(Box::<[u8]>::new_uninit_slice(len)).cast()
 }
 
 fn take(data: *mut u8, len: usize) -> Vec<u8> {
     if len == 0 {
         return Vec::new();
     }
-    // SAFETY: the host got `data` from `player_alloc(len)` and hands it back exactly once.
+    // SAFETY: the host got `data` from `player_alloc(len)`, an allocation of exactly `len` bytes, filled every
+    // byte of it, and hands it back exactly once.
     unsafe { Box::from_raw(core::ptr::slice_from_raw_parts_mut(data, len)) }.into_vec()
 }
 
