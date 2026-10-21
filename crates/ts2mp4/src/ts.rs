@@ -225,22 +225,26 @@ fn audio(list: &[Vec<u8>], near: Option<i64>) -> Option<Audio> {
     }
     let start = unwrap(start?, near);
     let (mut i, mut audio) = (0, None::<Audio>);
+    // An ADTS sync word: twelve set bits, then the ID bit, then the two layer bits, always 00.
+    let sync = |h: &[u8]| matches!(h, [0xff, b, ..] if b & 0xf6 == 0xf0);
     while let Some(h) = stream.get(i..i + 7) {
-        if h[0] != 0xff || h[1] & 0xf0 != 0xf0 {
+        if !sync(h) {
             i += 1; // resync on the next ADTS header
             continue;
         }
         let (object, freq, channels) = ((h[2] >> 6) + 1, (h[2] >> 2) & 15, (h[2] & 1) << 2 | h[3] >> 6);
         let config = [object << 3 | freq >> 1, (freq & 1) << 7 | channels << 3];
-        // A reserved rate, or a config other than the first frame's, means a corrupt byte passed for a sync word:
-        // resync past it rather than drop the whole track or mix two configs in it.
-        let Some(&rate) = RATES.get(usize::from(freq)).filter(|_| audio.as_ref().is_none_or(|a| a.config == config)) else {
+        let len = usize::from(h[3] & 3) << 11 | usize::from(h[4]) << 3 | usize::from(h[5] >> 5);
+        let header = if h[1] & 1 == 1 { 7 } else { 9 };
+        // A reserved rate, a config other than the first frame's, or a length that is shorter than the header or does
+        // not end where the next header starts (or the stream ends) means a corrupt byte passed for a sync word: resync
+        // past it rather than drop the whole track, mix two configs in it, or lock in the corrupt one as the track's.
+        let rate = RATES.get(usize::from(freq)).filter(|_| audio.as_ref().is_none_or(|a| a.config == config));
+        let frame = stream.get(i + header..i + len).filter(|_| stream.get(i + len..).is_some_and(|rest| rest.is_empty() || sync(rest)));
+        let (Some(&rate), Some(frame)) = (rate, frame) else {
             i += 1;
             continue;
         };
-        let len = usize::from(h[3] & 3) << 11 | usize::from(h[4]) << 3 | usize::from(h[5] >> 5);
-        let header = if h[1] & 1 == 1 { 7 } else { 9 };
-        let Some(frame) = stream.get(i + header..i + len) else { break };
         let a = audio.get_or_insert_with(|| Audio { config, rate, channels, samples: Vec::new() });
         let pts = start + a.samples.len() as i64 * 1024 * 90_000 / i64::from(a.rate);
         a.samples.push(Sample { pts, dts: pts, key: true, data: frame.to_vec() });
@@ -397,6 +401,40 @@ mod tests {
         let audio = audio(&[packet(&frames)], None).unwrap();
         assert_eq!((audio.config, audio.rate, audio.channels), ([0x12, 0x10], 44100, 2));
         assert_eq!(payloads(&audio), [1, 5]);
+    }
+
+    /// `frame` with its length field set to `len`.
+    fn sized(mut frame: [u8; 8], len: u16) -> [u8; 8] {
+        frame[3] = frame[3] & 0xfc | (len >> 11) as u8;
+        frame[4] = (len >> 3) as u8;
+        frame[5] = (len << 5) as u8 | 0x1f;
+        frame
+    }
+
+    #[test]
+    fn a_header_whose_length_does_not_lead_to_another_header_is_skipped() {
+        // A mono false sync first, 12 bytes long: before, its config was locked in and every real frame skipped.
+        let audio = audio(&[packet(&[sized(adts(2, 4, 1, 9), 12), adts(2, 4, 2, 1), adts(2, 4, 2, 3)])], None).unwrap();
+        assert_eq!((audio.rate, audio.channels), (44100, 2));
+        assert_eq!(payloads(&audio), [1, 3]);
+    }
+
+    #[test]
+    fn a_header_shorter_than_itself_is_skipped_and_the_scan_goes_on() {
+        for len in [0, 5] {
+            let audio = audio(&[packet(&[adts(2, 4, 2, 1), sized(adts(2, 4, 2, 2), len), adts(2, 4, 2, 3), adts(2, 4, 2, 5)])], None).unwrap();
+            assert_eq!(payloads(&audio), [1, 3, 5], "length {len}");
+        }
+    }
+
+    #[test]
+    fn a_header_with_layer_bits_set_is_not_a_sync_word() {
+        // A mono header whose length does lead to the next one: only its layer bits give it away.
+        let mut fake = adts(2, 4, 1, 9);
+        fake[1] |= 0x06;
+        let audio = audio(&[packet(&[fake, adts(2, 4, 2, 1), adts(2, 4, 2, 3)])], None).unwrap();
+        assert_eq!((audio.rate, audio.channels), (44100, 2));
+        assert_eq!(payloads(&audio), [1, 3]);
     }
 
     /// A PES timestamp field: `prefix` in the top four bits, `t` modulo 2^33 (as a stream carries it) around marker bits.
