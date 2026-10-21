@@ -8,6 +8,11 @@ fn loaded(data: &[u8]) -> Event {
     Event::Saw(Fact::Loaded { ms: 10.0, data: data.to_vec().into() })
 }
 
+/// A download that took 2 s: for `SAMPLE`, 45 KB, that is ~180 kbit/s, too slow for the high quality of `MASTER`.
+fn slow(data: &[u8]) -> Event {
+    Event::Saw(Fact::Loaded { ms: 2000.0, data: data.to_vec().into() })
+}
+
 fn fetch(url: &str) -> Cmd {
     Cmd::Fetch(url.into(), 0.0)
 }
@@ -77,9 +82,8 @@ fn moves_down_in_quality_after_a_single_slow_download() {
     p.dispatch(loaded(window("low", 0, 9, 2.0).as_bytes()));
     p.dispatch(loaded(SAMPLE)); // very fast: up to high
     assert_eq!(p.dispatch(loaded(window("high", 0, 9, 2.0).as_bytes())), [fetch("https://cdn.test/v/high1.ts")]);
-    // 45 KB in 2 s is ~180 kbit/s: straight back down, without waiting for an average to settle.
-    let slow = Event::Saw(Fact::Loaded { ms: 2000.0, data: SAMPLE.to_vec().into() });
-    assert!(matches!(p.dispatch(slow).last(), Some(Cmd::Fetch(u, _)) if u.ends_with("low2.ts")));
+    // Straight back down, without waiting for an average to settle.
+    assert!(matches!(p.dispatch(slow(SAMPLE)).last(), Some(Cmd::Fetch(u, _)) if u.ends_with("low2.ts")));
 }
 
 #[test]
@@ -101,6 +105,60 @@ fn buffers_30_s_ahead_follows_seeks_and_drops_the_far_past() {
 
     // Seek back: the download in flight is no use any more, the dropped segments load at once.
     assert_eq!(p.dispatch(Event::Saw(Fact::Time(0.0))), [fetch("https://cdn.test/s0.ts")]);
+}
+
+/// A VOD of 10 s segments with 0–30 s in, and s3 on its way at 5 s; then a seek back to 0 s, where s3 is out of
+/// reach and nothing else is missing: s3 is dropped, and no new download replaces it.
+fn s3_dropped(hls: Hls) -> Player {
+    let mut p = playing_with("https://cdn.test/movie.m3u8", hls);
+    p.dispatch(loaded(window("s", 0, 100, 10.0).as_bytes()));
+    for _ in 0..3 {
+        p.dispatch(loaded(SAMPLE));
+    }
+    assert_eq!(p.dispatch(Event::Saw(Fact::Time(5.0))), [fetch("https://cdn.test/s3.ts")]);
+    assert_eq!(p.dispatch(Event::Saw(Fact::Time(0.0))), [], "s3 is out of reach, and nothing else is missing");
+    p
+}
+
+#[test]
+fn a_dropped_segment_that_lands_is_appended_and_not_downloaded_again() {
+    let mut p = s3_dropped(Hls::default());
+    assert!(matches!(&p.dispatch(loaded(SAMPLE))[..], [Cmd::Append(_)]), "s3 is used, though nothing waits for it");
+    assert_eq!(p.dispatch(Event::Saw(Fact::Time(5.0))), [], "s3 is in already");
+    assert_eq!(p.dispatch(Event::Saw(Fact::Time(15.0))), [fetch("https://cdn.test/s4.ts")]);
+}
+
+#[test]
+fn a_dropped_segment_that_lands_counts_toward_the_bandwidth_estimate() {
+    // Like `s3_dropped`, on the low quality of a master, kept there by slow downloads.
+    let mut p = playing("https://cdn.test/v/master.m3u8");
+    p.dispatch(loaded(MASTER.as_bytes()));
+    p.dispatch(loaded(window("low", 0, 100, 10.0).as_bytes()));
+    for _ in 0..3 {
+        p.dispatch(slow(SAMPLE));
+    }
+    assert_eq!(p.dispatch(Event::Saw(Fact::Time(5.0))), [fetch("https://cdn.test/v/low3.ts")]);
+    assert_eq!(p.dispatch(Event::Saw(Fact::Time(0.0))), [], "low3 is out of reach, and nothing else is missing");
+    // low3 comes fast: up to high, whose playlist loads first.
+    assert!(matches!(&p.dispatch(loaded(SAMPLE))[..], [Cmd::Append(_), Cmd::Fetch(u, _)] if u.ends_with("high.m3u8")));
+}
+
+#[test]
+fn a_dropped_download_that_fails_is_forgotten_not_counted() {
+    // No retries: a failure that counted would give up on the stream at once.
+    let mut p = s3_dropped(Hls::tuned(|knob| matches!(knob, Knob::Retries).then_some(0.0)));
+    assert_eq!(p.dispatch(Event::Saw(Fact::LoadFailed)), []);
+    assert_eq!(p.dispatch(Event::Saw(Fact::Time(5.0))), [fetch("https://cdn.test/s3.ts")], "needed again: downloaded again");
+}
+
+#[test]
+fn a_dropped_init_section_that_lands_is_used_for_the_segments_after_it() {
+    let mut p = playing("https://cdn.test/f.m3u8");
+    assert_eq!(p.dispatch(loaded(fmp4_window("", 3, "").as_bytes())), [Cmd::Open(3.0), fetch("https://cdn.test/init.mp4")]);
+    // A seek to the end, where nothing is left to load: the init section is dropped on its way.
+    assert_eq!(p.dispatch(Event::Saw(Fact::Time(3.0))), []);
+    assert_eq!(p.dispatch(loaded(INIT)), [Cmd::Codec(FMP4_MIME.into()), Cmd::Append(INIT.to_vec())]);
+    assert_eq!(p.dispatch(Event::Saw(Fact::Time(0.0))), [fetch("https://cdn.test/0.m4s")], "the init section is in already");
 }
 
 #[test]
@@ -667,8 +725,7 @@ fn a_switch_between_mpeg_ts_and_fmp4_qualities_appends_each_ones_init_segment_ag
     let cmds = p.dispatch(loaded(INIT));
     assert_eq!(cmds[..2], [Cmd::Codec(FMP4_MIME.into()), Cmd::Append(INIT.to_vec())]);
     // A slow download: back down to the MPEG-TS quality, whose init segment is no longer the one in.
-    let slow = Event::Saw(Fact::Loaded { ms: 2000.0, data: SEGMENT_1.to_vec().into() });
-    assert_eq!(p.dispatch(slow).last(), Some(&fetch("https://cdn.test/v/low2.ts")));
+    assert_eq!(p.dispatch(slow(SEGMENT_1)).last(), Some(&fetch("https://cdn.test/v/low2.ts")));
     let cmds = p.dispatch(loaded(SAMPLE));
     assert!(matches!(&cmds[..], [Cmd::Codec(_), Cmd::Append(init), Cmd::Append(_), ..] if &init[4..8] == b"ftyp"), "{cmds:?}");
 }

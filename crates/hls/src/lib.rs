@@ -111,6 +111,9 @@ pub struct Hls {
     /// Where a live stream starts (its hold-back): downloads go from here until the element reports a time.
     start_at: Option<f64>,
     pending: Option<Request>,
+    /// The download in flight that `reconcile` dropped, until another one is asked for: the host aborts it then.
+    /// If nothing replaced it, it still lands, and is used like any other rather than downloaded again.
+    dropped: Option<Request>,
     /// The URL of the download in flight, or of the last one.
     fetching: String,
     retry: Retry,
@@ -405,7 +408,8 @@ impl Hls {
     }
 
     /// Drops the download in flight if the playhead has moved past it, or a waiting reload if a segment is
-    /// needed now (after a seek, say): the host keeps one download at a time, so the new one replaces it.
+    /// needed now (after a seek, say): the host keeps one download at a time, so the new one replaces it. When
+    /// nothing does, the dropped one runs to its end (see `dropped`).
     fn reconcile(&mut self, time: f64) {
         let drop = match self.pending {
             Some(Request::Reload(..)) => self.needed(self.pick(), time).is_some(),
@@ -413,7 +417,7 @@ impl Hls {
             _ => false,
         };
         if drop {
-            self.pending = None;
+            self.dropped = self.pending.take();
         }
     }
 
@@ -436,14 +440,15 @@ impl Hls {
     }
 
     fn fetch(&mut self, request: Request, url: String, delay: f64, out: &mut Vec<Cmd>) {
-        self.pending = Some(request);
+        (self.pending, self.dropped) = (Some(request), None);
         self.fetching = url.clone();
         out.push(Cmd::Fetch(url, delay));
     }
 
-    /// Takes the request in flight and counts the time its wait took (see `elapsed`).
+    /// Takes the request in flight, or the dropped one nothing replaced, and counts the time its wait took (see
+    /// `elapsed`): either way, the download slot was busy with it.
     fn finish(&mut self) -> Option<Request> {
-        let request = self.pending.take()?;
+        let request = self.pending.take().or_else(|| self.dropped.take())?;
         if let Request::Reload(_, delay) = request {
             self.elapsed += delay;
         }
@@ -479,8 +484,10 @@ impl Plugin for Hls {
             }
             Event::Saw(Fact::LoadFailed) => {
                 // A failed reload is tried again after half a target duration, like one that brought nothing
-                // new: retrying at once would use up the live limit in moments.
-                if let Some(request) = self.finish() {
+                // new: retrying at once would use up the live limit in moments. A dropped download that fails is
+                // just forgotten: nothing needs it.
+                let was_dropped = self.pending.is_none();
+                if let Some(request) = self.finish() && !was_dropped {
                     if let Request::Reload(..) = request {
                         (self.reloaded, self.unchanged) = (self.elapsed, true);
                     }
