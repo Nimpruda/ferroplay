@@ -1,9 +1,12 @@
 #!/bin/sh
 # Makes the demo media that is missing: the HLS stream (make-hls.sh), the test MP4 (make-media.sh) and
 # the test media catalog (make-catalog.sh). Delete web/hls or web/media to remake it. The catalog is
-# also remade when make-catalog.sh is newer, since entries are added to it over time.
+# also remade when make-catalog.sh or a file under catalog/ is newer, since entries and sources are
+# added over time.
 set -e
 cd "$(dirname "$0")"
 [ -f web/hls/master.m3u8 ] || ./make-hls.sh
 [ -f web/media/test.mp4 ] || ./make-media.sh
-[ web/catalog/catalog.json -nt make-catalog.sh ] || ./make-catalog.sh
+if [ ! -f web/catalog/catalog.json ] || [ -n "$(find make-catalog.sh catalog -newer web/catalog/catalog.json)" ]; then
+  ./make-catalog.sh
+fi

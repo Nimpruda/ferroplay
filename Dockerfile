@@ -30,12 +30,14 @@ COPY Cargo.toml Cargo.lock build.sh ./
 COPY crates crates
 RUN mkdir web && ./build.sh
 
-# ffmpeg and the make-*.sh scripts; compose mounts ./web over /src/web so they write into the repo.
+# ffmpeg, the make-*.sh scripts and the catalog sources; compose mounts ./web over /src/web so they
+# write into the repo, and ./.cache over /src/.cache so downloads are kept.
 FROM debian:trixie-slim AS media
 RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 COPY make-demo.sh make-hls.sh make-media.sh make-catalog.sh make-live.sh ./
+COPY catalog catalog
 
 # e2e/run.py builds and runs our crates itself, so this keeps the toolchain, with them prebuilt.
 FROM chef AS e2e

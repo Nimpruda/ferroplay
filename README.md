@@ -41,14 +41,19 @@ so every segment does too. So links play even when their site sends no CORS head
 ## Test media catalog
 
 `./make-catalog.sh` (`just catalog`) writes test media to `web/catalog/`, a folder per entry, made
-from a synthetic test pattern with a tone or from a cut of the Sintel trailer. `build.sh` and the
-docker media service make it when it is missing or older than the script.
+from a source: a synthetic test pattern with a tone, or a cut of the Sintel trailer (downloaded once
+to `.cache/`, which the docker media service shares). Sources are plug-ins: a new one is one file,
+`catalog/sources/<name>.sh`, defining `source_<name>` (the seconds, then the ffmpeg output options).
+`build.sh` and the docker media service make the catalog when it is missing or older than
+`make-catalog.sh` or a file under `catalog/`.
 `web/catalog/catalog.json` says what each entry is, what it should do in Firefox and Chrome (play
-to the end, or fail with a message); `make-catalog.sh` says
-how to add an entry and documents the fields.
+to the end, or fail with a message), and the plugins it needs, if
+any; `make-catalog.sh` says how to add an entry and documents the fields.
 
-The page lists the entries under the player, grouped by axis; a click plays one with the ticked
-plugins. It is for checks by hand: the e2e tests keep their own.
+The page lists the entries under the player, grouped by axis. A click on an entry that declares
+plugins ticks exactly those (the ones the page lacks, like `hls` on `?core=1`, are dropped) and
+plays it in a new player; any other entry plays with the ticked plugins. It is for checks by hand:
+the e2e tests keep their own.
 
 ## Crates
 

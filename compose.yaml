@@ -5,7 +5,7 @@ x-media: &media
   build: { context: ., target: media }
   image: player-media
   user: "${HOST_UID:-1000}:${HOST_GID:-1000}" # files on the host stay yours
-  volumes: [./web:/src/web]
+  volumes: [./web:/src/web, ./.cache:/src/.cache] # .cache: downloads kept between runs
 
 services:
   server:

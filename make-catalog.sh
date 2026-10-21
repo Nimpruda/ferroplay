@@ -1,11 +1,17 @@
 #!/bin/sh
 # Makes the test media catalog in web/catalog/ for checks by hand on the demo page: a folder per entry,
 # and catalog.json saying what each entry is and what it should do in each browser.
-# Sources: a synthetic test pattern with a tone (no network), or a cut of the Sintel trailer (read
-# straight from blender.org, like make-hls.sh) where the content matters.
+# Sources are plug-ins: catalog/sources/<name>.sh defines source_<name>, which takes the seconds then
+# the ffmpeg output options and runs ffmpeg on its own inputs. synthetic: a test pattern with a tone (no
+# network); clip: a cut of the Sintel trailer, downloaded once to .cache/, where the content matters.
+# To add a source: one new file in catalog/sources/, nothing else.
 # To add an entry: `start <id>`, set its fields (see `add`), make its media in "$dir" with `encode`, `add`.
 set -e
 cd "$(dirname "$0")"
+for file in catalog/sources/*.sh; do
+  # shellcheck source=/dev/null
+  . "$file"
+done
 rm -rf web/catalog
 mkdir -p web/catalog
 entries=
@@ -15,40 +21,42 @@ str() {
   if [ -n "$1" ]; then printf '"%s"' "$(printf %s "$1" | sed 's/[\\"]/\\&/g')"; else printf null; fi
 }
 
+# A JSON array of the space-separated words in $1, or null when there are none.
+array() {
+  [ -n "$1" ] || { printf null; return; }
+  list=
+  for word in $1; do list="${list:+$list, }$(str "$word")"; done
+  printf '[%s]' "$list"
+}
+
 # Starts entry $1: its folder ($dir; $path from web/, for urls) and its fields, all empty.
 start() {
   id=$1 path=catalog/$1 dir=web/catalog/$1
-  title='' url='' delivery='' container='' codecs='' axis='' feature='' fault='' source='' firefox='' chrome=''
+  title='' url='' delivery='' container='' codecs='' axis='' feature='' fault='' source='' plugins='' firefox='' chrome=''
   mkdir -p "$dir"
 }
 
-# ffmpeg on the entry's source, cut to $1 seconds; the other arguments are the output options.
-# synthetic: a 640x360 test pattern with a 440 Hz tone. clip: the Sintel trailer from 0:14, past the titles.
+# ffmpeg on the entry's source (catalog/sources/), cut to $1 seconds; the other arguments are the
+# output options.
 encode() {
-  seconds=$1
-  shift
-  case $source in
-    synthetic) set -- -f lavfi -i testsrc=size=640x360:rate=25 -f lavfi -i sine=frequency=440 -t "$seconds" "$@" ;;
-    clip) set -- -ss 14 -i https://download.blender.org/durian/trailer/sintel_trailer-480p.mp4 -t "$seconds" "$@" ;;
-    *) echo "$id: unknown source '$source'" >&2 && exit 1 ;;
-  esac
-  ffmpeg -loglevel error -y "$@"
+  command -v "source_$source" >/dev/null || { echo "$id: unknown source '$source'" >&2 && exit 1; }
+  "source_$source" "$@"
 }
 
 # Lists the entry in catalog.json. Fields: title; url (from web/); delivery (file, hls); container;
 # codecs (space-separated); axis (container, codec, feature, fault: the page groups by it); feature or
-# fault (what the entry shows); source (synthetic, clip); firefox and chrome: the expected outcome,
-# `ends` (plays to the end) or `fails: <the message>`.
+# fault (what the entry shows); source (a file in catalog/sources/); plugins (space-separated): the
+# player plugins the entry needs, which the page ticks, exactly those, before playing it (say, hls
+# without gaps to show a stall), or empty to play it with whatever is ticked; firefox and chrome: the
+# expected outcome, `ends` (plays to the end) or `fails: <the message>`.
 add() {
   : "${title:?}" "${url:?}" "${delivery:?}" "${container:?}" "${codecs:?}" "${axis:?}" "${source:?}" "${firefox:?}" "${chrome:?}"
-  list=
-  for codec in $codecs; do list="${list:+$list, }$(str "$codec")"; done
   entries="${entries:+$entries,
 }  {
     \"id\": $(str "$id"), \"title\": $(str "$title"), \"url\": $(str "$url"),
-    \"delivery\": $(str "$delivery"), \"container\": $(str "$container"), \"codecs\": [$list],
+    \"delivery\": $(str "$delivery"), \"container\": $(str "$container"), \"codecs\": $(array "$codecs"),
     \"axis\": $(str "$axis"), \"feature\": $(str "$feature"), \"fault\": $(str "$fault"), \"source\": $(str "$source"),
-    \"expect\": {\"firefox\": $(str "$firefox"), \"chrome\": $(str "$chrome")}
+    \"plugins\": $(array "$plugins"), \"expect\": {\"firefox\": $(str "$firefox"), \"chrome\": $(str "$chrome")}
   }"
 }
 

@@ -70,9 +70,8 @@
   const remember = () => history.replaceState(null, '', '?' + new URLSearchParams({ play: link, plugins: chosen, ...core && { core: 1 } }));
   const forget = () => video.removeEventListener('loadedmetadata', resume);
 
-  // A new set of plugins means a new player. Same video and position; HLS reloads, so seek back.
-  function build() {
-    const [time, playing] = [video.currentTime, !video.paused];
+  // A new set of plugins means a new player. Same video and position by default; HLS reloads, so seek back.
+  function build(time = video.currentTime, playing = !video.paused) {
     forget();
     p?.destroy();
     p = player(video, Object.fromEntries(chosen.map(name => [name, PLUGINS[name][0]])));
@@ -84,20 +83,27 @@
 
   for (const [name, [, label]] of Object.entries(PLUGINS)) {
     box.insertAdjacentHTML('beforeend', `<label><input type="checkbox" name="${name}"> ${label}</label>`);
-    box.querySelector(`[name=${name}]`).checked = chosen.includes(name);
   }
+  const tick = () => box.querySelectorAll('input').forEach(input => { input.checked = chosen.includes(input.name); });
+  tick();
   box.addEventListener('change', () => {
     chosen = [...box.querySelectorAll(':checked')].map(input => input.name);
     remember();
     build();
   });
-  // Plays `url` now: from the form, or from a test button.
-  function openLink(url) {
+  // Plays `url` now: from the form, or from a test button. With `plugins` (a catalog entry's), ticks
+  // exactly those, dropping the ones this page lacks, and plays it from the start in a new player.
+  function openLink(url, plugins) {
     link = url;
     form.play.value = url;
+    if (plugins) {
+      chosen = plugins.filter(name => name in PLUGINS);
+      tick();
+    }
     remember();
     forget();
-    p.play(source(link));
+    if (plugins) build(0, true);
+    else p.play(source(link));
   }
   form.addEventListener('submit', e => {
     e.preventDefault();
@@ -126,7 +132,8 @@
   }
 
   // The test media catalog (make-catalog.sh), grouped by axis: each entry with what it should do in
-  // each browser. A click plays it with the plugins ticked.
+  // each browser. A click plays it with the plugins it declares,
+  // ticked in place of the others (those this page lacks are dropped), or with the plugins ticked.
   const catalog = document.getElementById('catalog');
   fetch('catalog/catalog.json').then(r => r.ok ? r.json() : Promise.reject(r.status)).then(entries => {
     for (const [axis, group] of Object.entries(Object.groupBy(entries, e => e.axis))) {
@@ -134,7 +141,7 @@
       catalog.append(Object.assign(document.createElement('h3'), { textContent: axis }), list);
       for (const e of group) {
         const button = Object.assign(document.createElement('button'), { type: 'button', textContent: e.title });
-        button.addEventListener('click', () => { openLink(`${here}/${e.url}`); video.scrollIntoView(); });
+        button.addEventListener('click', () => { openLink(`${here}/${e.url}`, e.plugins); video.scrollIntoView(); });
         const expect = Object.entries(e.expect).map(([browser, outcome]) =>
           `${browser[0].toUpperCase()}${browser.slice(1)}: ${outcome === 'ends' ? 'plays to the end' : outcome}`);
         const about = [e.feature ?? e.fault, `${e.delivery}, ${e.container}, ${e.codecs.join(' + ')}, ${e.source}`,
