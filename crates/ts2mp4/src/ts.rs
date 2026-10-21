@@ -55,8 +55,26 @@ impl Media {
 }
 
 pub fn demux(ts: &[u8]) -> Media {
+    demux_near(ts, None)
+}
+
+/// Like `demux`, with the segment's timestamps taken past as many wraps of the clock as put them nearest `near`:
+/// they go back to 0 every 26.5 h, and a live stream that runs longer goes on from there. Within the segment,
+/// each timestamp is unwrapped against the one before it, so samples keep their order across a wrap.
+pub fn demux_near(ts: &[u8], near: Option<i64>) -> Media {
     let (video_pes, audio_pes) = split(ts);
-    Media { video: video(&video_pes), audio: audio(&audio_pes) }
+    let video = video(&video_pes, near);
+    // Against the video rather than `near`: a segment's two tracks are on the same side of a wrap.
+    let near = video.as_ref().and_then(|v| v.samples.first()).map(|s| s.dts).or(near);
+    Media { video, audio: audio(&audio_pes, near) }
+}
+
+/// PTS and DTS are 33 bits at 90 kHz: they wrap every 2^33 ticks.
+const WRAP: i64 = 1 << 33;
+
+/// The timestamp `t` plus as many wraps as put it nearest `near`, before or after it; as it is with nothing to be near.
+fn unwrap(t: i64, near: Option<i64>) -> i64 {
+    near.map_or(t, |near| t + (near - t + WRAP / 2).div_euclid(WRAP) * WRAP)
 }
 
 /// TS packets -> the PES packets of the first H.264 and the first AAC stream.
@@ -141,8 +159,8 @@ fn timestamp(b: &[u8]) -> i64 {
         | i64::from(b[4] >> 1)
 }
 
-/// PES packets -> video frames, one per PES (the norm in HLS).
-fn video(list: &[Vec<u8>]) -> Option<Video> {
+/// PES packets -> video frames, one per PES (the norm in HLS), the first one timed at the wrap nearest `near`.
+fn video(list: &[Vec<u8>], near: Option<i64>) -> Option<Video> {
     let (mut sps, mut pps, mut samples) = (Vec::new(), Vec::new(), Vec::<Sample>::new());
     for data in list {
         let Some((times, payload)) = pes(data) else { continue };
@@ -160,7 +178,10 @@ fn video(list: &[Vec<u8>]) -> Option<Video> {
             }
         }
         match (times, samples.last_mut()) {
-            (Some((pts, dts)), _) => samples.push(Sample { pts, dts, key, data: frame }),
+            (Some((pts, dts)), _) => {
+                let dts = unwrap(dts, samples.last().map(|s| s.dts).or(near));
+                samples.push(Sample { pts: unwrap(pts, Some(dts)), dts, key, data: frame });
+            }
             (None, Some(last)) => last.data.extend(frame), // a frame split over two PES
             (None, None) => {}
         }
@@ -185,14 +206,14 @@ fn nal_units(data: &[u8]) -> impl Iterator<Item = &[u8]> {
 
 const RATES: [u32; 13] = [96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350];
 
-/// PES packets -> AAC frames, timed from the first PTS (frames may straddle PES packets).
-fn audio(list: &[Vec<u8>]) -> Option<Audio> {
+/// PES packets -> AAC frames, timed from the first PTS at the wrap nearest `near` (frames may straddle PES packets).
+fn audio(list: &[Vec<u8>], near: Option<i64>) -> Option<Audio> {
     let (mut stream, mut start) = (Vec::new(), None);
     for (times, payload) in list.iter().filter_map(|data| pes(data)) {
         start = start.or(times.map(|(pts, _)| pts));
         stream.extend_from_slice(payload);
     }
-    let start = start?;
+    let start = unwrap(start?, near);
     let (mut i, mut audio) = (0, None::<Audio>);
     while let Some(h) = stream.get(i..i + 7) {
         if h[0] != 0xff || h[1] & 0xf0 != 0xf0 {
@@ -342,7 +363,8 @@ mod tests {
 
     /// One PES packet with PTS 0 carrying `frames`.
     fn packet(frames: &[[u8; 8]]) -> Vec<u8> {
-        let mut packet = vec![0, 0, 1, 0xc0, 0, 0, 0x80, 0x80, 5, 0x21, 0, 1, 0, 1];
+        let mut packet = vec![0, 0, 1, 0xc0, 0, 0, 0x80, 0x80, 5];
+        packet.extend(time(2, 0));
         packet.extend(frames.iter().flatten());
         packet
     }
@@ -353,7 +375,7 @@ mod tests {
 
     #[test]
     fn a_header_with_a_reserved_rate_is_skipped_and_the_other_frames_kept() {
-        let audio = audio(&[packet(&[adts(2, 4, 2, 1), adts(2, 13, 2, 2), adts(2, 4, 2, 3), adts(2, 15, 2, 4), adts(2, 4, 2, 5)])]).unwrap();
+        let audio = audio(&[packet(&[adts(2, 4, 2, 1), adts(2, 13, 2, 2), adts(2, 4, 2, 3), adts(2, 15, 2, 4), adts(2, 4, 2, 5)])], None).unwrap();
         assert_eq!((audio.rate, audio.channels), (44100, 2));
         assert_eq!(payloads(&audio), [1, 3, 5]);
     }
@@ -361,8 +383,53 @@ mod tests {
     #[test]
     fn a_frame_with_another_object_type_rate_or_channel_count_than_the_first_is_skipped() {
         let frames = [adts(2, 4, 2, 1), adts(1, 4, 2, 2), adts(2, 3, 2, 3), adts(2, 4, 1, 4), adts(2, 4, 2, 5)];
-        let audio = audio(&[packet(&frames)]).unwrap();
+        let audio = audio(&[packet(&frames)], None).unwrap();
         assert_eq!((audio.config, audio.rate, audio.channels), ([0x12, 0x10], 44100, 2));
         assert_eq!(payloads(&audio), [1, 5]);
+    }
+
+    /// A PES timestamp field: `prefix` in the top four bits, `t` modulo 2^33 (as a stream carries it) around marker bits.
+    fn time(prefix: u8, t: i64) -> [u8; 5] {
+        [prefix << 4 | (t >> 29) as u8 & 0x0e | 1, (t >> 22) as u8, (t >> 14) as u8 | 1, (t >> 7) as u8, (t << 1) as u8 | 1]
+    }
+
+    /// One video PES packet with a PTS and a DTS, the parameter sets of a 16x16 picture and an IDR slice.
+    fn frame(pts: i64, dts: i64) -> Vec<u8> {
+        let mut packet = vec![0, 0, 1, 0xe0, 0, 0, 0x80, 0xc0, 10];
+        packet.extend(time(3, pts));
+        packet.extend(time(1, dts));
+        packet.extend([0, 0, 1, 0x67, 0x42, 0, 0x1e, 0xfb, 0xc0, 0, 0, 1, 0x68, 0xce, 0, 0, 1, 0x65, 0x88]);
+        packet
+    }
+
+    /// (pts, dts) of each video sample.
+    fn times(video: &Video) -> Vec<(i64, i64)> {
+        video.samples.iter().map(|s| (s.pts, s.dts)).collect()
+    }
+
+    #[test]
+    fn a_wrap_inside_a_segment_keeps_sample_order_and_durations() {
+        // DTS steps over the wrap on the second frame; the first frame's PTS is past it already.
+        let list = [frame(WRAP + 3000, WRAP - 3000), frame(WRAP + 6000, WRAP), frame(WRAP + 9000, WRAP + 3000)];
+        let video = video(&list, None).unwrap();
+        assert_eq!(times(&video), [(WRAP + 3000, WRAP - 3000), (WRAP + 6000, WRAP), (WRAP + 9000, WRAP + 3000)]);
+    }
+
+    #[test]
+    fn a_segment_after_a_wrap_goes_on_from_the_timestamp_it_is_near() {
+        // The previous segment ended just before the wrap (or, 26.5 h later, the second one): this one starts after.
+        for wraps in [1, 2] {
+            let near = wraps * WRAP - 90_000;
+            let video = video(&[frame(3000, 0), frame(6000, 3000)], Some(near)).unwrap();
+            assert_eq!(times(&video), [(wraps * WRAP + 3000, wraps * WRAP), (wraps * WRAP + 6000, wraps * WRAP + 3000)]);
+            assert_eq!(audio(&[packet(&[adts(2, 4, 2, 1)])], Some(near)).unwrap().samples[0].pts, wraps * WRAP, "PTS 0");
+        }
+    }
+
+    #[test]
+    fn a_segment_before_a_wrap_stays_there_when_near_a_later_one() {
+        // A seek back from after the wrap to before it.
+        let video = video(&[frame(WRAP - 87_000, WRAP - 90_000)], Some(WRAP + 90_000)).unwrap();
+        assert_eq!(times(&video), [(WRAP - 87_000, WRAP - 90_000)]);
     }
 }

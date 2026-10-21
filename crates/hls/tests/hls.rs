@@ -548,6 +548,59 @@ fn a_huge_sequence_number_does_not_overflow() {
     assert!(matches!(p.dispatch(loaded(SAMPLE)).last(), Some(Cmd::Fetch(..))));
 }
 
+/// `SAMPLE` with every PES timestamp moved by `ticks` (90 kHz), modulo 2^33 as a stream carries them.
+fn shifted(ticks: i64) -> Vec<u8> {
+    let mut ts = SAMPLE.to_vec();
+    for p in ts.chunks_mut(188).filter(|p| p[1] & 0x40 != 0) {
+        let skip = if p[3] & 0x20 != 0 { 5 + usize::from(p[4]) } else { 4 };
+        let Some(pes) = p.get_mut(skip..).filter(|pes| pes.starts_with(&[0, 0, 1])) else { continue };
+        let fields = match pes[7] >> 6 {
+            3 => 2, // PTS and DTS
+            2 => 1,
+            _ => 0,
+        };
+        for b in pes[9..9 + 5 * fields].chunks_mut(5) {
+            let t = i64::from(b[0] >> 1 & 7) << 30 | i64::from(b[1]) << 22 | i64::from(b[2] >> 1) << 15 | i64::from(b[3]) << 7 | i64::from(b[4] >> 1);
+            let t = (t + ticks).rem_euclid(1 << 33);
+            b.copy_from_slice(&[b[0] & 0xf0 | (t >> 29) as u8 & 0x0e | 1, (t >> 22) as u8, (t >> 14) as u8 | 1, (t >> 7) as u8, (t << 1) as u8 | 1]);
+        }
+    }
+    ts
+}
+
+#[test]
+fn a_segment_whose_timestamps_wrapped_goes_on_after_the_one_before() {
+    // sample.ts is 2 s from stream time 1.4 s. Moved 2 s back, it is s0, whose timestamps wrap to 0 after 0.6 s;
+    // as it is, it is s1, which follows s0 with its timestamps past the wrap.
+    let mut p = playing("https://cdn.test/movie.m3u8");
+    p.dispatch(loaded(window("s", 0, 3, 2.0).as_bytes()));
+    let cmds = p.dispatch(loaded(&shifted(-180_000)));
+    let [_, Cmd::Append(init), Cmd::Append(s0), _] = &cmds[..] else { panic!("{cmds:?}") };
+    let cmds = p.dispatch(loaded(SAMPLE));
+    let [Cmd::Append(s1), _] = &cmds[..] else { panic!("{cmds:?}") };
+    assert!(start(init, s0).abs() < 1e-3, "s0 starts at 0 s: {}", start(init, s0));
+    assert!((start(init, s1) - 2.0).abs() < 1e-3, "s1 starts at 2 s, where s0 ends: {}", start(init, s1));
+}
+
+/// Where a fragment made with this init segment starts, in seconds: the opposite of the shift that would move it to 0.
+fn start(init: &[u8], fragment: &[u8]) -> f64 {
+    -ts2mp4::offset(&ts2mp4::read_init(init).unwrap().tracks, fragment, 0.0).unwrap()
+}
+
+#[test]
+fn a_segment_reached_by_a_seek_past_a_wrap_lands_at_its_playlist_time() {
+    // Segments of 50000 s (13.9 h), each sample.ts moved to its time: the seek from s0 to s2 crosses the wrap at
+    // 26.5 h, and s2's timestamps are nearer s0's than its own turn of the clock.
+    let mut p = playing("https://cdn.test/movie.m3u8");
+    p.dispatch(loaded(window("s", 0, 3, 50_000.0).as_bytes()));
+    let cmds = p.dispatch(loaded(SAMPLE));
+    let [_, Cmd::Append(init), ..] = &cmds[..] else { panic!("{cmds:?}") };
+    assert_eq!(saw(&mut p, [Fact::Time(100_000.0)]).last(), Some(&fetch("https://cdn.test/s2.ts")));
+    let cmds = p.dispatch(loaded(&shifted(100_000 * 90_000)));
+    let [Cmd::Append(s2), ..] = &cmds[..] else { panic!("{cmds:?}") };
+    assert!((start(init, s2) - 100_000.0).abs() < 1e-3, "s2 starts at 100000 s: {}", start(init, s2));
+}
+
 /// ffmpeg's fMP4 version of fixtures/sample.ts: the init section, then two 1 s segments (stream times 0 and 1 s).
 const INIT: &[u8] = include_bytes!("../../../fixtures/fmp4-init.mp4");
 const SEGMENT_0: &[u8] = include_bytes!("../../../fixtures/fmp4-0.m4s");

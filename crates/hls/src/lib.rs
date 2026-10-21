@@ -290,7 +290,10 @@ impl Hls {
     /// An MPEG-TS segment as an fMP4 fragment on the playlist's timeline, after the init segment for it if that
     /// changed.
     fn ts_fragment(&mut self, data: &[u8], start: f64, sequence: u64, out: &mut Vec<Cmd>) -> Result<Vec<u8>, String> {
-        let media = ts2mp4::demux(data);
+        // The stream's timestamps wrap every 26.5 h: take this segment's nearest where its playlist time says it
+        // is. Not nearest the segment before: a seek may land many hours away.
+        let near = self.offset.map(|offset| ((start - offset) * 90_000.0) as i64);
+        let media = ts2mp4::demux_near(data, near);
         let pts = media.start().ok_or("no MPEG-TS media this player can play")?;
         let offset = *self.offset.get_or_insert(start - pts as f64 / 90_000.0);
         self.use_init(media.mime(), &ts2mp4::init(&media), out);
