@@ -23,5 +23,5 @@ mod view;
 
 pub use player::{Event, Player, Plugin};
 pub use ranges::Ranges;
-pub use state::{Cmd, Fact, Intent, State};
+pub use state::{Cmd, Fact, Intent, Payload, State};
 pub use view::View;

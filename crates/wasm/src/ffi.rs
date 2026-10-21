@@ -153,7 +153,7 @@ fn decode(code: u32, v: f64, data: Vec<u8>) -> Option<Event> {
         20 => Saw(F::Muted(v != 0.0)),
         21 => Saw(F::Rate(v)),
         22 => Saw(F::Fullscreen(v != 0.0)),
-        23 => Saw(F::Loaded { ms: v, data }),
+        23 => Saw(F::Loaded { ms: v, data: data.into() }),
         24 => Saw(F::LoadFailed),
         25 => Do(I::Load(String::from_utf8(data).ok()?)),
         // The end of the range travels in the bytes, as 8 little-endian bytes (see `encode`).

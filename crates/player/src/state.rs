@@ -1,5 +1,6 @@
 use crate::Ranges;
 use alloc::{string::String, vec::Vec};
+use core::cell::{Ref, RefCell};
 
 /// Something the host reported.
 #[derive(Clone, Debug, PartialEq)]
@@ -19,10 +20,34 @@ pub enum Fact {
     Rate(f64),
     Fullscreen(bool),
     /// A `Cmd::Fetch` finished, after `ms` milliseconds.
-    Loaded { ms: f64, data: Vec<u8> },
+    Loaded { ms: f64, data: Payload },
     LoadFailed,
     /// The media element's seekable range (start, end), as the host reads it.
     Seekable(f64, f64),
+}
+
+/// The bytes of a download. Every plugin sees the same `Fact`, by reference, so the one that asked for the
+/// download takes them out instead of copying a segment of several megabytes on its way to `Cmd::Append`; the
+/// plugins after it see none.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Payload(RefCell<Vec<u8>>);
+
+impl Payload {
+    /// The bytes, leaving none behind.
+    pub fn take(&self) -> Vec<u8> {
+        self.0.take()
+    }
+
+    /// The bytes, for a plugin that only reads them; panics while it is held if another takes them.
+    pub fn bytes(&self) -> Ref<'_, [u8]> {
+        Ref::map(self.0.borrow(), Vec::as_slice)
+    }
+}
+
+impl From<Vec<u8>> for Payload {
+    fn from(data: Vec<u8>) -> Self {
+        Self(RefCell::new(data))
+    }
 }
 
 /// Something a user or plugin wants, relative to the current state.

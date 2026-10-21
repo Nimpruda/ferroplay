@@ -5,7 +5,7 @@ const SAMPLE: &[u8] = include_bytes!("../../../fixtures/sample.ts");
 
 fn loaded(data: &[u8]) -> Event {
     // 10 ms per download: fast enough to always pick the best quality.
-    Event::Saw(Fact::Loaded { ms: 10.0, data: data.to_vec() })
+    Event::Saw(Fact::Loaded { ms: 10.0, data: data.to_vec().into() })
 }
 
 fn fetch(url: &str) -> Cmd {
@@ -78,7 +78,7 @@ fn moves_down_in_quality_after_a_single_slow_download() {
     p.dispatch(loaded(SAMPLE)); // very fast: up to high
     assert_eq!(p.dispatch(loaded(window("high", 0, 9, 2.0).as_bytes())), [fetch("https://cdn.test/v/high1.ts")]);
     // 45 KB in 2 s is ~180 kbit/s: straight back down, without waiting for an average to settle.
-    let slow = Event::Saw(Fact::Loaded { ms: 2000.0, data: SAMPLE.to_vec() });
+    let slow = Event::Saw(Fact::Loaded { ms: 2000.0, data: SAMPLE.to_vec().into() });
     assert!(matches!(p.dispatch(slow).last(), Some(Cmd::Fetch(u, _)) if u.ends_with("low2.ts")));
 }
 

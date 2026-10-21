@@ -214,9 +214,10 @@ impl Hls {
         self.appended.iter().any(|&(s, ..)| s == sequence)
     }
 
-    /// Handles a finished download; why it cannot be used, if it cannot.
-    fn receive(&mut self, request: Request, ms: f64, data: &[u8], out: &mut Vec<Cmd>) -> Result<(), Failure> {
-        let text = core::str::from_utf8(data).unwrap_or_default();
+    /// Handles a finished download; why it cannot be used, if it cannot. The bytes are ours: a segment moves on to
+    /// `Cmd::Append` without a copy.
+    fn receive(&mut self, request: Request, ms: f64, data: Vec<u8>, out: &mut Vec<Cmd>) -> Result<(), Failure> {
+        let text = core::str::from_utf8(&data).unwrap_or_default();
         match request {
             Request::Master => {
                 self.variants = playlist::variants(text, &self.url);
@@ -271,7 +272,7 @@ impl Hls {
                 };
                 let Some(segment) = self.variants[v].segment(sequence) else { return Ok(()) };
                 let (start, end, fmp4) = (segment.start, segment.end(), segment.map.is_some());
-                let fragment = if fmp4 { self.fmp4_fragment(data, start) } else { self.ts_fragment(data, start, sequence, out) };
+                let fragment = if fmp4 { self.fmp4_fragment(data, start) } else { self.ts_fragment(&data, start, sequence, out) };
                 // Even if unusable: skip a broken segment rather than retry it forever.
                 self.appended.push((sequence, end, fragment.is_err().then_some(start)));
                 let fragment = fragment.map_err(|why| Failure::Unusable(["segment ", &self.fetching, " skipped: ", &why].concat()))?;
@@ -279,7 +280,7 @@ impl Hls {
             }
             Request::Init(v, sequence) => {
                 let Some(map) = self.variants[v].segment(sequence).and_then(|s| s.map.clone()) else { return Ok(()) };
-                let init = ts2mp4::read_init(data).map_err(|why| Failure::Unplayable([&self.fetching, ": ", &why].concat()))?;
+                let init = ts2mp4::read_init(&data).map_err(|why| Failure::Unplayable([&self.fetching, ": ", &why].concat()))?;
                 self.use_init(init.mime, data, out);
                 self.map = Some((map, init.tracks));
             }
@@ -296,17 +297,16 @@ impl Hls {
         let media = ts2mp4::demux_near(data, near);
         let pts = media.start().ok_or("no MPEG-TS media this player can play")?;
         let offset = *self.offset.get_or_insert(start - pts as f64 / 90_000.0);
-        self.use_init(media.mime(), &ts2mp4::init(&media), out);
+        self.use_init(media.mime(), ts2mp4::init(&media), out);
         self.map = None;
         // The fragment number only has to grow; it wraps rather than overflow on huge sequence numbers.
         Ok(ts2mp4::fragment(&media, (sequence as u32).wrapping_add(1), (offset * 90_000.0) as i64))
     }
 
-    /// An fMP4 segment as it is, moved onto the playlist's timeline. Its init section is in already: `next`
-    /// fetches it first.
-    fn fmp4_fragment(&mut self, data: &[u8], start: f64) -> Result<Vec<u8>, String> {
+    /// An fMP4 segment as it is, moved onto the playlist's timeline in place. Its init section is in already:
+    /// `next` fetches it first.
+    fn fmp4_fragment(&mut self, mut data: Vec<u8>, start: f64) -> Result<Vec<u8>, String> {
         let tracks = self.map.as_ref().map_or(&[][..], |(_, tracks)| tracks);
-        let mut data = data.to_vec();
         let offset = match self.offset {
             Some(offset) => offset,
             None => ts2mp4::offset(tracks, &data, start)?,
@@ -316,12 +316,13 @@ impl Hls {
         Ok(data)
     }
 
-    /// Appends an init segment, with its MIME type, unless it is the one in the Media Source already.
-    fn use_init(&mut self, mime: String, init: &[u8], out: &mut Vec<Cmd>) {
+    /// Appends an init segment, with its MIME type, unless it is the one in the Media Source already. It is kept
+    /// to compare the next one with: the copy is the one the append hands to the host.
+    fn use_init(&mut self, mime: String, init: Vec<u8>, out: &mut Vec<Cmd>) {
         if init != self.init {
             out.push(Cmd::Codec(mime));
-            out.push(Cmd::Append(init.to_vec()));
-            self.init = init.to_vec();
+            out.push(Cmd::Append(init.clone()));
+            self.init = init;
         }
     }
 
@@ -469,7 +470,7 @@ impl Plugin for Hls {
             Event::Saw(Fact::Loaded { ms, data }) => {
                 if let Some(request) = self.finish() {
                     self.elapsed += *ms / 1000.0;
-                    match self.receive(request, *ms, data, &mut cmds) {
+                    match self.receive(request, *ms, data.take(), &mut cmds) {
                         Ok(()) => self.retry.succeed(),
                         Err(failure) => self.failed(failure, &mut cmds),
                     }

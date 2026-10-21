@@ -338,3 +338,19 @@ fn a_new_load_starts_playback_over_for_start_gaps() {
     p.dispatch(Event::Saw(Fact::Time(0.0)));
     assert_eq!(buffered(&mut p, &[(0.066, 2.086)]), [Cmd::Seek(0.066 + 0.1)]);
 }
+
+#[test]
+fn the_plugin_a_download_is_for_takes_its_bytes_and_the_ones_after_it_see_none() {
+    // Each plugin appends what it saw of the download.
+    let look = |_: &State, event: &Event, out: &mut Vec<Intent>| {
+        let Event::Saw(Fact::Loaded { data, .. }) = event else { return };
+        out.push(Intent::Cmd(Cmd::Append(data.bytes().to_vec())));
+    };
+    let take = |_: &State, event: &Event, out: &mut Vec<Intent>| {
+        let Event::Saw(Fact::Loaded { data, .. }) = event else { return };
+        out.push(Intent::Cmd(Cmd::Append(data.take())));
+    };
+    let mut p = Player::new().with(look).with(take).with(look);
+    let cmds = p.dispatch(Event::Saw(Fact::Loaded { ms: 10.0, data: vec![1, 2, 3].into() }));
+    assert_eq!(cmds, [Cmd::Append(vec![1, 2, 3]), Cmd::Append(vec![1, 2, 3]), Cmd::Append(vec![])]);
+}
