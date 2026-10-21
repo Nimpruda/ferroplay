@@ -582,6 +582,16 @@ fn a_segment_whose_timestamps_wrapped_goes_on_after_the_one_before() {
     assert!((start(init, s1) - 2.0).abs() < 1e-3, "s1 starts at 2 s, where s0 ends: {}", start(init, s1));
 }
 
+#[test]
+fn a_segment_whose_timestamps_go_back_before_the_first_one_is_said_and_skipped() {
+    // sample.ts starts at stream time 1.4 s, which s0 puts at 0 s; s1, moved 1 s back, would start at -1 s.
+    let mut p = playing("https://cdn.test/movie.m3u8");
+    p.dispatch(loaded(window("s", 0, 3, 2.0).as_bytes()));
+    p.dispatch(loaded(SAMPLE));
+    let warning = Cmd::Warn("segment https://cdn.test/s1.ts skipped: a decode time before the start of the stream".into());
+    assert_eq!(p.dispatch(loaded(&shifted(-90_000))), [warning, fetch("https://cdn.test/s2.ts")]);
+}
+
 /// Where a fragment made with this init segment starts, in seconds: the opposite of the shift that would move it to 0.
 fn start(init: &[u8], fragment: &[u8]) -> f64 {
     -ts2mp4::offset(&ts2mp4::read_init(init).unwrap().tracks, fragment, 0.0).unwrap()

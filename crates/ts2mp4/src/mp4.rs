@@ -1,7 +1,7 @@
 //! Fragmented MP4 writer (ISO/IEC 14496-12): an init segment, then one `moof` + `mdat` per segment.
 
 use super::ts::{Audio, Media, Video};
-use alloc::vec::Vec;
+use alloc::{string::String, vec::Vec};
 
 const VIDEO: u32 = 1;
 const AUDIO: u32 = 2;
@@ -80,8 +80,12 @@ fn mp4a(a: &Audio) -> Vec<u8> {
     bx(b"mp4a", &[&[0; 6], &[0, 1], &[0; 8], &[0, a.channels, 0, 16], &[0; 4], &rate, &esds])
 }
 
-/// One `moof` + `mdat` with all of a segment's samples. `offset` shifts the 90 kHz timestamps.
-pub fn fragment(m: &Media, sequence: u32, offset: i64) -> Vec<u8> {
+/// One `moof` + `mdat` with all of a segment's samples. `offset` shifts the 90 kHz timestamps. A track it would
+/// start before 0 is an error, as in `shift`: clamping it to 0 would move it against the other track.
+pub fn fragment(m: &Media, sequence: u32, offset: i64) -> Result<Vec<u8>, String> {
+    if m.start().is_some_and(|start| start + offset < 0) {
+        return Err(crate::BEFORE_START.into());
+    }
     let mut runs = Vec::new();
     if let Some(v) = &m.video {
         runs.push(video_run(v, offset));
@@ -101,7 +105,7 @@ pub fn fragment(m: &Media, sequence: u32, offset: i64) -> Vec<u8> {
         at += run.data.len() as u32;
     }
     let data: Vec<&[u8]> = runs.iter().map(|run| run.data.as_slice()).collect();
-    [moof(&offsets), bx(b"mdat", &data)].concat()
+    Ok([moof(&offsets), bx(b"mdat", &data)].concat())
 }
 
 /// One track's part of a fragment.
@@ -143,7 +147,7 @@ fn video_run(v: &Video, offset: i64) -> Run {
     });
     Run {
         track: VIDEO,
-        base: (v.samples[0].dts + offset).max(0) as u64,
+        base: (v.samples[0].dts + offset) as u64,
         fields: 0xf00,
         samples: samples.collect(),
         data: v.samples.iter().flat_map(|s| s.data.iter().copied()).collect(),
@@ -153,7 +157,7 @@ fn video_run(v: &Video, offset: i64) -> Run {
 fn audio_run(a: &Audio, offset: i64) -> Run {
     Run {
         track: AUDIO,
-        base: ((a.samples[0].pts + offset).max(0) * i64::from(a.rate) / 90_000) as u64,
+        base: ((a.samples[0].pts + offset) * i64::from(a.rate) / 90_000) as u64,
         fields: 0x300,
         samples: a.samples.iter().map(|s| [1024, s.data.len() as u32, 0, 0]).collect(),
         data: a.samples.iter().flat_map(|s| s.data.iter().copied()).collect(),

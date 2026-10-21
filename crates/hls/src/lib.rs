@@ -295,10 +295,12 @@ impl Hls {
         let media = ts2mp4::demux_near(data, near);
         let pts = media.start().ok_or("no MPEG-TS media this player can play")?;
         let offset = *self.offset.get_or_insert(start - pts as f64 / 90_000.0);
+        // The fragment number only has to grow; it wraps rather than overflow on huge sequence numbers. Made before
+        // the init segment, so that one that cannot go on the timeline changes nothing.
+        let fragment = ts2mp4::fragment(&media, (sequence as u32).wrapping_add(1), (offset * 90_000.0) as i64)?;
         self.use_init(media.setup(), |_| (media.mime(), ts2mp4::init(&media)), out);
         self.map = None;
-        // The fragment number only has to grow; it wraps rather than overflow on huge sequence numbers.
-        Ok(ts2mp4::fragment(&media, (sequence as u32).wrapping_add(1), (offset * 90_000.0) as i64))
+        Ok(fragment)
     }
 
     /// An fMP4 segment as it is, moved onto the playlist's timeline in place. Its init section is in already:

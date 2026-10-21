@@ -44,6 +44,22 @@ fn writes_well_formed_fragmented_mp4() {
 }
 
 #[test]
+fn a_track_moved_before_0_is_an_error_not_a_fragment_at_0() {
+    let before = Err("a decode time before the start of the stream".to_string());
+    let video = ts2mp4::Media { audio: None, ..ts2mp4::demux(SAMPLE) };
+    let audio = ts2mp4::Media { video: None, ..ts2mp4::demux(SAMPLE) };
+    for media in [&video, &audio] {
+        let start = media.start().unwrap();
+        assert!(ts2mp4::fragment(media, 1, -start).is_ok(), "at 0");
+        assert_eq!(ts2mp4::fragment(media, 1, -start - 1), before, "one tick before 0");
+    }
+    // With both tracks, moving the later one to 0 would put the earlier one before it.
+    let (video_start, audio_start) = (video.start().unwrap(), audio.start().unwrap());
+    assert_ne!(video_start, audio_start, "the tracks start apart");
+    assert_eq!(ts2mp4::fragment(&ts2mp4::demux(SAMPLE), 1, -video_start.max(audio_start)), before);
+}
+
+#[test]
 fn ignores_garbage() {
     assert!(ts2mp4::convert(b"<html>not a video</html>").is_none());
     assert!(ts2mp4::convert(&[0x47; 188 * 3]).is_none());

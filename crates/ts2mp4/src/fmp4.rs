@@ -71,7 +71,7 @@ pub fn shift(segment: &mut [u8], tracks: &[Track], offset: f64) -> Result<(), St
     for time in decode_times(segment).map_err(in_segment)? {
         let ticks = (offset * timescale(tracks, time.track).map_err(in_segment)?) as i64;
         let shifted = time.value.checked_add(ticks).and_then(|t| u64::try_from(t).ok());
-        let shifted = shifted.ok_or_else(|| in_segment("a decode time before the start of the stream"))?;
+        let shifted = shifted.ok_or_else(|| in_segment(crate::BEFORE_START))?;
         if time.width == 4 && shifted > u64::from(u32::MAX) {
             return Err(in_segment("a decode time too large for a 32-bit tfdt"));
         }
