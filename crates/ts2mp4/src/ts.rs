@@ -303,8 +303,9 @@ fn picture_size(sps: &[u8]) -> (u32, u32) {
         2 => (2, field),
         _ => (1, field),
     };
-    let width = w.saturating_mul(16).saturating_sub((crop[0] + crop[1]).saturating_mul(crop_x));
-    let height = (field * h).saturating_mul(16).saturating_sub((crop[2] + crop[3]).saturating_mul(crop_y));
+    // Saturating throughout: a malformed SPS must not overflow (a panic in debug, a wrong size in release).
+    let width = w.saturating_mul(16).saturating_sub(crop[0].saturating_add(crop[1]).saturating_mul(crop_x));
+    let height = field.saturating_mul(h).saturating_mul(16).saturating_sub(crop[2].saturating_add(crop[3]).saturating_mul(crop_y));
     (width, height)
 }
 
