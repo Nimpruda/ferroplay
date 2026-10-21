@@ -2,7 +2,7 @@
 //!
 //! ```text
 //! let media = ts2mp4::demux(&ts);                              // samples and codec setup
-//! let init = ts2mp4::init(&media);                             // once per codec setup
+//! let init = ts2mp4::init(&media);                             // once per codec setup (media.setup())
 //! let fragment = ts2mp4::fragment(&media, sequence, offset);   // per segment
 //! ```
 //!

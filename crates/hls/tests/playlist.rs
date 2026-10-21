@@ -1,4 +1,4 @@
-use hls::playlist::{ByteRange, Map, align, is_playlist, join, media, rewrite, segments, variants};
+use hls::playlist::{ByteRange, Map, align, is_playlist, join, media, rewrite, variants};
 
 const MASTER: &str = "#EXTM3U
 #EXT-X-STREAM-INF:PROGRAM-ID=1,AVERAGE-BANDWIDTH=900,BANDWIDTH=2149280,CODECS=\"mp4a.40.2,avc1.64001f\",RESOLUTION=1280x720
@@ -18,7 +18,7 @@ fn master_playlist() {
 #[test]
 fn media_playlist() {
     let text = "#EXTM3U\n#EXT-X-TARGETDURATION:11\n#EXTINF:10.000,\na.ts\n#EXTINF:9.5,title\nhttp://o.test/b.ts\n#EXT-X-ENDLIST\n";
-    let s = segments(text, "https://cdn.test/v/index.m3u8");
+    let s = media(text, "https://cdn.test/v/index.m3u8").segments;
     assert_eq!(s.len(), 2);
     assert_eq!((s[0].start, s[0].duration, s[0].uri.as_str()), (0.0, 10.0, "https://cdn.test/v/a.ts"));
     assert_eq!((s[1].start, s[1].duration, s[1].uri.as_str()), (10.0, 9.5, "http://o.test/b.ts"));
@@ -103,7 +103,7 @@ fn map(uri: &str, range: Option<(u64, u64)>) -> Option<Map> {
 
 #[test]
 fn every_segment_after_a_map_gets_its_init_section() {
-    let s = segments(FMP4, "https://my.test/video/live.m3u8");
+    let s = media(FMP4, "https://my.test/video/live.m3u8").segments;
     assert_eq!(s.len(), 2);
     assert!(s.iter().all(|s| s.map == map("https://my.test/video/init.mp4", None)));
 }
@@ -112,7 +112,7 @@ fn every_segment_after_a_map_gets_its_init_section() {
 fn a_map_applies_only_to_the_segments_after_it() {
     let text = "#EXTM3U\n#EXTINF:2,\na.ts\n#EXT-X-MAP:URI=\"one.mp4\"\n#EXTINF:2,\nb.m4s\n\
 #EXT-X-DISCONTINUITY\n#EXT-X-MAP:URI=\"https://other.test/two.mp4\"\n#EXTINF:2,\nc.m4s\n";
-    let maps: Vec<_> = segments(text, "https://cdn.test/v/index.m3u8").into_iter().map(|s| s.map).collect();
+    let maps: Vec<_> = media(text, "https://cdn.test/v/index.m3u8").segments.into_iter().map(|s| s.map).collect();
     assert_eq!(maps, [None, map("https://cdn.test/v/one.mp4", None), map("https://other.test/two.mp4", None)]);
 }
 
@@ -120,7 +120,7 @@ fn a_map_applies_only_to_the_segments_after_it() {
 fn a_map_byte_range_is_length_at_offset() {
     let with = |range: &str| {
         let text = format!("#EXTM3U\n#EXT-X-MAP:URI=\"all.mp4\",BYTERANGE=\"{range}\"\n#EXTINF:2,\nall.mp4\n");
-        segments(&text, "https://cdn.test/index.m3u8").remove(0).map
+        media(&text, "https://cdn.test/index.m3u8").segments.remove(0).map
     };
     assert_eq!(with("720@0"), map("https://cdn.test/all.mp4", Some((720, 0))));
     assert_eq!(with("720@1024"), map("https://cdn.test/all.mp4", Some((720, 1024))));
@@ -132,5 +132,5 @@ fn a_map_byte_range_is_length_at_offset() {
 #[test]
 fn a_map_without_a_uri_is_no_init_section() {
     let text = "#EXTM3U\n#EXT-X-MAP:BYTERANGE=\"720@0\"\n#EXTINF:2,\na.m4s\n";
-    assert_eq!(segments(text, "https://cdn.test/index.m3u8")[0].map, None);
+    assert_eq!(media(text, "https://cdn.test/index.m3u8").segments[0].map, None);
 }

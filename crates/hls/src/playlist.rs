@@ -46,6 +46,14 @@ impl Variant {
     pub fn segment(&self, sequence: u64) -> Option<&Segment> {
         self.segments.iter().find(|s| s.sequence == sequence)
     }
+
+    /// The segments on screen or within reach of the playhead at `time`, given the seconds to load ahead. The
+    /// player asks on every event, and a long VOD lists thousands: as each segment starts where the one before it
+    /// ends, the first one is found by binary search, and the last is the one before the first past the reach.
+    pub fn within(&self, time: f64, ahead: f64) -> impl Iterator<Item = &Segment> {
+        let from = self.segments.partition_point(|s| s.end() <= time);
+        self.segments[from..].iter().take_while(move |s| s.start < time + ahead)
+    }
 }
 
 /// A media playlist and the tags around its segments.
@@ -150,11 +158,6 @@ pub fn align(segments: &mut [Segment], previous: &[Segment]) {
     for segment in segments {
         segment.start += shift;
     }
-}
-
-/// The segments of a media playlist, with their start times.
-pub fn segments(text: &str, base: &str) -> Vec<Segment> {
-    media(text, base).segments
 }
 
 /// Replaces every URI in a playlist (URI lines and `URI="…"` attributes) with `map(resolved URI)`.

@@ -118,7 +118,10 @@ pub struct Hls {
     bandwidth: f64,
     /// Seconds that move the stream's own timestamps onto the playlist's timeline, from its first segment.
     offset: Option<f64>,
-    /// The last init segment appended; a new one is needed when the quality changes.
+    /// What the last init segment appended was made from; a new one is needed when the quality changes. For fMP4,
+    /// the init section itself. For MPEG-TS, the codec setup (`Media::setup`): every segment brings it, so the init
+    /// segment is built only when it changes. The two are never equal: an init section has `ftyp` at bytes 4 to 8,
+    /// where a setup has an SPS, whose first byte is never `f`, or ends.
     init: Vec<u8>,
     /// The `EXT-X-MAP` of that init segment and its tracks, when it came from the stream (fMP4).
     map: Option<(Map, Vec<Track>)>,
@@ -204,11 +207,6 @@ impl Hls {
         self.knob(Knob::Behind(self.target), BEHIND)
     }
 
-    /// Whether a segment is on screen or within reach of the playhead at `time`, given the seconds to load ahead.
-    fn reachable(segment: &Segment, time: f64, ahead: f64) -> bool {
-        segment.end() > time && segment.start < time + ahead
-    }
-
     /// Whether the segment with this sequence number is in the Media Source.
     fn loaded(&self, sequence: u64) -> bool {
         self.appended.iter().any(|&(s, ..)| s == sequence)
@@ -281,7 +279,7 @@ impl Hls {
             Request::Init(v, sequence) => {
                 let Some(map) = self.variants[v].segment(sequence).and_then(|s| s.map.clone()) else { return Ok(()) };
                 let init = ts2mp4::read_init(&data).map_err(|why| Failure::Unplayable([&self.fetching, ": ", &why].concat()))?;
-                self.use_init(init.mime, data, out);
+                self.use_init(data, |section| (init.mime, section.to_vec()), out);
                 self.map = Some((map, init.tracks));
             }
         }
@@ -297,7 +295,7 @@ impl Hls {
         let media = ts2mp4::demux_near(data, near);
         let pts = media.start().ok_or("no MPEG-TS media this player can play")?;
         let offset = *self.offset.get_or_insert(start - pts as f64 / 90_000.0);
-        self.use_init(media.mime(), ts2mp4::init(&media), out);
+        self.use_init(media.setup(), |_| (media.mime(), ts2mp4::init(&media)), out);
         self.map = None;
         // The fragment number only has to grow; it wraps rather than overflow on huge sequence numbers.
         Ok(ts2mp4::fragment(&media, (sequence as u32).wrapping_add(1), (offset * 90_000.0) as i64))
@@ -316,13 +314,15 @@ impl Hls {
         Ok(data)
     }
 
-    /// Appends an init segment, with its MIME type, unless it is the one in the Media Source already. It is kept
-    /// to compare the next one with: the copy is the one the append hands to the host.
-    fn use_init(&mut self, mime: String, init: Vec<u8>, out: &mut Vec<Cmd>) {
-        if init != self.init {
+    /// Appends an init segment and its MIME type, as `make` gives them from `from`, unless the one in the Media
+    /// Source was made from the same (see `init`). `from` is kept to compare the next one with: an fMP4 section is
+    /// copied once, for the append; an MPEG-TS init is built only here.
+    fn use_init(&mut self, from: Vec<u8>, make: impl FnOnce(&[u8]) -> (String, Vec<u8>), out: &mut Vec<Cmd>) {
+        if from != self.init {
+            let (mime, init) = make(&from);
             out.push(Cmd::Codec(mime));
-            out.push(Cmd::Append(init.clone()));
-            self.init = init;
+            out.push(Cmd::Append(init));
+            self.init = from;
         }
     }
 
@@ -389,8 +389,7 @@ impl Hls {
 
     /// The first segment of variant `v` the buffer wants now: not loaded, and within reach of the playhead.
     fn needed(&self, v: usize, time: f64) -> Option<&Segment> {
-        let ahead = self.ahead();
-        (self.variants[v].segments.iter()).find(|s| !self.loaded(s.sequence) && Self::reachable(s, time, ahead))
+        self.variants[v].within(time, self.ahead()).find(|s| !self.loaded(s.sequence))
     }
 
     /// Asks for the playlist again, delayed until it is due: one target duration after the last one arrived,
@@ -430,8 +429,7 @@ impl Hls {
 
     /// Whether segment `sequence` of variant `v` is still worth loading with the playhead at `time`.
     fn wanted(&self, v: usize, sequence: u64, time: f64) -> bool {
-        let ahead = self.ahead();
-        self.variants[v].segment(sequence).is_some_and(|s| Self::reachable(s, time, ahead))
+        self.variants[v].within(time, self.ahead()).any(|s| s.sequence == sequence)
     }
 
     fn fetch(&mut self, request: Request, url: String, delay: f64, out: &mut Vec<Cmd>) {

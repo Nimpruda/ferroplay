@@ -648,6 +648,22 @@ fn a_quality_switch_fetches_the_new_init_section_and_appends_it_only_if_it_diffe
 }
 
 #[test]
+fn a_switch_between_mpeg_ts_and_fmp4_qualities_appends_each_ones_init_segment_again() {
+    let mut p = playing("https://cdn.test/v/master.m3u8");
+    p.dispatch(loaded(MASTER.as_bytes()));
+    p.dispatch(loaded(window("low", 0, 9, 1.0).as_bytes()));
+    assert!(matches!(&p.dispatch(loaded(SAMPLE))[..], [Cmd::Codec(_), Cmd::Append(_), Cmd::Append(_), Cmd::Fetch(..)]));
+    assert_eq!(p.dispatch(loaded(fmp4_window("high", 9, "").as_bytes())), [fetch("https://cdn.test/v/highinit.mp4")]);
+    let cmds = p.dispatch(loaded(INIT));
+    assert_eq!(cmds[..2], [Cmd::Codec(FMP4_MIME.into()), Cmd::Append(INIT.to_vec())]);
+    // A slow download: back down to the MPEG-TS quality, whose init segment is no longer the one in.
+    let slow = Event::Saw(Fact::Loaded { ms: 2000.0, data: SEGMENT_1.to_vec().into() });
+    assert_eq!(p.dispatch(slow).last(), Some(&fetch("https://cdn.test/v/low2.ts")));
+    let cmds = p.dispatch(loaded(SAMPLE));
+    assert!(matches!(&cmds[..], [Cmd::Codec(_), Cmd::Append(init), Cmd::Append(_), ..] if &init[4..8] == b"ftyp"), "{cmds:?}");
+}
+
+#[test]
 fn an_unplayable_init_section_fails_the_stream_at_once() {
     let mut p = playing("https://cdn.test/f.m3u8");
     p.dispatch(loaded(fmp4_window("", 3, "").as_bytes()));
@@ -685,4 +701,47 @@ fn an_fmp4_segment_that_goes_back_in_time_is_unusable() {
     p.dispatch(loaded(SEGMENT_1));
     let reason = "segment https://cdn.test/1.m4s skipped: media segment: a decode time before the start of the stream";
     assert_eq!(p.dispatch(loaded(SEGMENT_0)), [Cmd::Warn(reason.into()), fetch("https://cdn.test/2.m4s")]);
+}
+
+/// Not a check but a measure, so it is left out of `cargo test`: how long the plugin takes on a 2 h VOD (1800
+/// segments of 4 s) with the playhead in the middle, playing 250 s: 1000 time events at 4 Hz, and the MPEG-TS
+/// segments they ask for. The fastest of five runs, as the plugin sees it (no player). Run it with
+/// `cargo test --release -p hls --test hls -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn how_long_a_two_hour_vod_takes() {
+    use player::{Plugin, State};
+    use std::time::{Duration, Instant};
+
+    // Handles an event, adding the time it took to `took`; whether the plugin asks for a download.
+    let on = |hls: &mut Hls, state: &State, event: Event, took: &mut Duration| {
+        let mut out = Vec::new();
+        let clock = Instant::now();
+        hls.on(state, &event, &mut out);
+        *took += clock.elapsed();
+        matches!(out.last(), Some(Intent::Cmd(Cmd::Fetch(..))))
+    };
+    let mut best = [Duration::MAX; 3];
+    for _ in 0..5 {
+        let (mut hls, mut state, mut took, mut segments) = (Hls::default(), State::default(), [Duration::ZERO; 3], 0);
+        let [playlist, appends, events] = &mut took;
+        on(&mut hls, &state, Event::Do(Intent::Load("https://cdn.test/movie.m3u8".into())), playlist);
+        state.time = 3600.0;
+        let mut fetching = on(&mut hls, &state, loaded(window("s", 0, 1800, 4.0).as_bytes()), playlist);
+        for i in 0..=1000 {
+            if i > 0 {
+                state.time = 3600.0 + i as f64 / 4.0;
+                fetching = on(&mut hls, &state, Event::Saw(Fact::Time(state.time)), events);
+            }
+            while fetching {
+                fetching = on(&mut hls, &state, loaded(SAMPLE), appends);
+                segments += 1;
+            }
+        }
+        assert_eq!(segments, 70, "30 s ahead of the playhead and the 250 s it plays, in 4 s segments");
+        for (best, took) in best.iter_mut().zip(took) {
+            *best = (*best).min(took);
+        }
+    }
+    println!("the playlist: {:?}; 70 segments: {:?}; 1000 time events: {:?}", best[0], best[1], best[2]);
 }

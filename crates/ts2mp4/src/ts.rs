@@ -52,6 +52,16 @@ impl Media {
         }
         codec::mime(&codecs)
     }
+
+    /// The codec setup: what `init` reads, the SPS and PPS (the picture size comes from the SPS) and the audio
+    /// config (the rate and channels come from it), with their lengths so that no two setups give the same bytes.
+    /// Segments with the same setup get the same init segment, so a player can keep it and build another only
+    /// when it changes.
+    pub fn setup(&self) -> Vec<u8> {
+        let (sps, pps) = self.video.as_ref().map_or((&[][..], &[][..]), |v| (&v.sps, &v.pps));
+        let config = self.audio.as_ref().map_or(&[][..], |a| &a.config);
+        [&(sps.len() as u16).to_be_bytes(), &(pps.len() as u16).to_be_bytes(), sps, pps, config].concat()
+    }
 }
 
 pub fn demux(ts: &[u8]) -> Media {

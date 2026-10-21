@@ -15,6 +15,21 @@ fn demuxes_h264_and_aac() {
 }
 
 #[test]
+fn the_setup_changes_with_what_the_init_segment_is_made_from() {
+    let media = ts2mp4::demux(SAMPLE);
+    assert_eq!(media.setup(), ts2mp4::demux(SAMPLE).setup());
+    let mut moved = ts2mp4::demux(SAMPLE);
+    // The same bytes, one moved from the SPS to the PPS: another init segment, so another setup.
+    let video = moved.video.as_mut().unwrap();
+    let last = video.sps.pop().unwrap();
+    video.pps.insert(0, last);
+    assert_ne!(ts2mp4::init(&moved), ts2mp4::init(&media));
+    assert_ne!(moved.setup(), media.setup());
+    let silent = ts2mp4::Media { audio: None, ..ts2mp4::demux(SAMPLE) };
+    assert_ne!(silent.setup(), media.setup());
+}
+
+#[test]
 fn writes_well_formed_fragmented_mp4() {
     let (_, mp4) = ts2mp4::convert(SAMPLE).unwrap();
     let mut boxes = Vec::new();
