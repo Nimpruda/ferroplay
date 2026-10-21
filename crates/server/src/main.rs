@@ -76,9 +76,10 @@ async fn proxy(State(client): State<reqwest::Client>, uri: Uri, headers: HeaderM
 /// known by that type so the proxy's are too, are never cached: a live playlist changes every few seconds,
 /// and a cached one lists segments already gone.
 async fn hls_types(request: Request, next: Next) -> Response {
-    let kind = match request.uri().path().rsplit('.').next() {
-        Some("m3u8") => Some(PLAYLIST),
-        Some("ts") => Some("video/mp2t"),
+    // Any case, like the proxy's is_playlist: a file named X.M3U8 is a playlist all the same.
+    let kind = match request.uri().path().rsplit('.').next().unwrap_or_default() {
+        ext if ext.eq_ignore_ascii_case("m3u8") => Some(PLAYLIST),
+        ext if ext.eq_ignore_ascii_case("ts") => Some("video/mp2t"),
         _ => None,
     };
     let mut response = next.run(request).await;
