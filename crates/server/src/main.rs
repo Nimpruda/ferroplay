@@ -1,6 +1,7 @@
 //! Serves the page and player from `web/` (`ServeDir` handles the Range requests seeking needs),
 //! plus `/proxy/<url>` so any link plays, even from sites without CORS headers. The proxy streams
-//! bodies through as they arrive, except playlists, which it reads whole to rewrite.
+//! bodies through as they arrive, except playlists, which it reads whole to rewrite. `/fault/<spec>/<path>`
+//! serves `web/<path>` with a fault (see `fault`), for the test catalog.
 //! Usage: cargo run -p server -- [dir] (default `web`, port from $PORT or 8080, address from $HOST or
 //! 127.0.0.1). Local use only: the proxy fetches any URL, so only containers set HOST=0.0.0.0.
 
@@ -14,6 +15,8 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use tower_http::services::ServeDir;
 
+mod fault;
+
 const PLAYLIST: &str = "application/vnd.apple.mpegurl";
 
 #[tokio::main]
@@ -26,9 +29,11 @@ async fn main() -> std::io::Result<()> {
     let client = reqwest::Client::builder().user_agent("player-proxy").build().expect("http client");
     let app = Router::new()
         .route("/proxy/{*url}", get(proxy))
-        .fallback_service(ServeDir::new(dir))
+        .fallback_service(ServeDir::new(&dir))
         .layer(middleware::from_fn(hls_types))
-        .with_state(client);
+        .with_state(client)
+        .merge(fault::router(&dir)); // after the layer: it sets its own types
+
     axum::serve(listener, app).await
 }
 
@@ -76,12 +81,7 @@ async fn proxy(State(client): State<reqwest::Client>, uri: Uri, headers: HeaderM
 /// known by that type so the proxy's are too, are never cached: a live playlist changes every few seconds,
 /// and a cached one lists segments already gone.
 async fn hls_types(request: Request, next: Next) -> Response {
-    // Any case, like the proxy's is_playlist: a file named X.M3U8 is a playlist all the same.
-    let kind = match request.uri().path().rsplit('.').next().unwrap_or_default() {
-        ext if ext.eq_ignore_ascii_case("m3u8") => Some(PLAYLIST),
-        ext if ext.eq_ignore_ascii_case("ts") => Some("video/mp2t"),
-        _ => None,
-    };
+    let kind = hls_type(request.uri().path());
     let mut response = next.run(request).await;
     if response.status().is_success() {
         let headers = response.headers_mut();
@@ -93,4 +93,13 @@ async fn hls_types(request: Request, next: Next) -> Response {
         }
     }
     response
+}
+
+/// The HLS content type of a file at `path`, by its extension in any case, if it is a playlist or an MPEG-TS segment.
+fn hls_type(path: &str) -> Option<&'static str> {
+    if hls::playlist::is_playlist(path) {
+        Some(PLAYLIST)
+    } else {
+        path.rsplit('.').next().filter(|ext| ext.eq_ignore_ascii_case("ts")).map(|_| "video/mp2t")
+    }
 }

@@ -270,5 +270,59 @@ firefox='fails: init section: av01 is a codec this player cannot play' chrome=en
 hls_fmp4 encode 10 -c:v libaom-av1 -usage realtime -cpu-used 8 -row-mt 1 -tiles 2x2 -b:v 500k -g 50 -c:a aac -b:a 96k -ac 2
 add
 
+# Faults. Container entries' playlists through the server's fault route (crates/server/src/fault.rs), which
+# lists their URIs through it too, so the fault reaches the segments. The url is a route, not a file, and
+# there is no media of their own: `fault_start` is `start` without the folder. The route counts requests
+# from the server's start, all paths of a spec together: nth=3 is the third, whichever file that is (the
+# segment after the first in Firefox; Chrome fetches the first segment twice), and shows once until the
+# server restarts. Chrome's player gives up on any failed download, and the page shows nothing.
+# Starts fault entry $1: the faults $2 over the playlist $3 (from catalog/) of a synthetic H.264 + AAC
+# container entry in container $4.
+fault_start() {
+  start "$1"
+  rmdir "$dir"
+  url=fault/$2/catalog/$3 container=$4 delivery=hls codecs='h264 aac' axis=fault source=synthetic
+}
+TS=hls-ts-h264-aac/index.m3u8 QUALITIES=hls-fmp4-qualities/master.m3u8
+CHROME_GIVES_UP='fails: PipelineStatus::DEMUXER_ERROR_COULD_NOT_PARSE'
+
+# A missing segment that comes back: the engine retries it (retries 3).
+fault_start fault-segment-404 status=404,nth=3 $TS mpegts
+title='HLS, a segment 404 then back' fault='A segment answers 404 once (the third request): retried'
+firefox=ends chrome=$CHROME_GIVES_UP
+add
+
+# The playlist itself fails first: retried like a segment.
+fault_start fault-playlist-503 status=503,nth=1 $TS mpegts
+title='HLS, the playlist 503 first' fault='The playlist answers 503 on the first request: retried'
+firefox=ends chrome=$CHROME_GIVES_UP
+add
+
+# A flaky CDN under three qualities: three in ten requests fail with 503, each path its own way, the same
+# every run. Firefox meets one (a 360p segment), Chrome the 180p init section.
+fault_start fault-flaky flaky=0.3 $QUALITIES fmp4
+title='HLS, a flaky CDN (30% 503)' fault='3 requests in 10 answer 503: each retried'
+firefox=ends chrome=$CHROME_GIVES_UP
+add
+
+# A network slower than every quality but the lowest: both players drop to 180p and play on.
+fault_start fault-slow slow=300kbit $QUALITIES fmp4
+title='HLS, a slow network (300 kbit/s)' fault='Every body at 300 kbit/s: down to 180p' firefox=ends chrome=ends
+add
+
+# A connection dropped mid-segment (half the body, under the full Content-Length): the download fails
+# and is retried, by the engine and by Chrome alike.
+fault_start fault-truncated truncate=0.5,nth=3 $TS mpegts
+title='HLS, a truncated segment' fault='A segment cut at half its length once (the third request): retried'
+firefox=ends chrome=ends
+add
+
+# A CDN or captive portal answering 200 with an HTML error page in place of a segment: the engine warns
+# and skips it, then moves the playhead past the hole; Chrome drops it and ends 4 s early.
+fault_start fault-html-segment body=html,nth=3 $TS mpegts
+title='HLS, an HTML page as a segment' fault='A segment is an HTML error page with 200 once (the third request): skipped'
+firefox=ends chrome=ends
+add
+
 printf '[\n%s\n]\n' "$entries" > web/catalog/catalog.json
 ls web/catalog

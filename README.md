@@ -36,6 +36,10 @@ setup can be shared: `/?play=https://…/master.m3u8&plugins=keyboard,gaps,hls,s
 
 Playlists from other sites go through the server's proxy (`/proxy/<url>`), which rewrites them
 so every segment does too. So links play even when their site sends no CORS headers.
+`/fault/<spec>/<path>` serves `web/<path>` as a bad network or CDN would, playlists rewritten so the
+fault reaches every segment: `<spec>` is a comma-separated list such as `status=404,nth=3`,
+`flaky=0.3`, `slow=300kbit`, `delay=2s`, `truncate=0.5`, `type=text%2Fhtml` or `body=html`
+(`crates/server/src/fault.rs` says what each does).
 
 ## Test media catalog
 
@@ -62,6 +66,10 @@ Axis `codec`: codecs our HLS engine does not play, each to fail naming the codec
 and AV1 in fMP4, AC-3, E-AC-3 and MP3 in MPEG-TS, MP3 packed audio; and HEVC as an MP4 file, which the
 browser decodes or not.
 
+Axis `fault`: container entries' HLS through `/fault/` (a segment 404 then recovered, a playlist 503 on
+the first request, a flaky CDN, a slow network, a truncated segment, an HTML page as a segment). The
+server counts requests from its start: an `nth` fault shows once, until the server is restarted.
+
 ## Crates
 
 | Crate | Role | Depends on |
@@ -70,7 +78,7 @@ browser decodes or not.
 | `ts2mp4` | MPEG-TS (H.264 + AAC) to fragmented MP4. Also a command: `cargo run -p ts2mp4 < seg.ts > seg.mp4`. | – |
 | `hls` | HLS playback as a player plugin, plus M3U8 helpers (`playlist`). | `player`, `ts2mp4` |
 | `player-wasm` | The browser build: a code, a number and optional bytes each way. The only `unsafe`. | `player`, `hls` (feature `hls`, default) |
-| `server` | Serves `web/` (with HLS content types) and the proxy. | `hls` |
+| `server` | Serves `web/` (with HLS content types), the proxy and the fault route. | `hls` |
 
 The libraries are `no_std` and dependency-free, so they run (and are tested) anywhere.
 
