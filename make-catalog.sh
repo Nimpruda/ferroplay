@@ -6,7 +6,8 @@
 # network); clip: a cut of the Sintel trailer, downloaded once to .cache/, where the content matters.
 # To add a source: one new file in catalog/sources/, nothing else.
 # To add an entry: `start <id>`, set its fields (see `add`), make its media in "$dir" with `encode` (or
-# `remux`, when only the container differs from media made already), `add`. Another entry for the same
+# `remux`, when only the container differs from media made already; `hls_ts` or `hls_fmp4` in front of
+# either makes an HLS VOD), `add`. Another entry for the same
 # media: change the id and the fields that differ, `add` again.
 set -e
 cd "$(dirname "$0")"
@@ -52,10 +53,19 @@ remux() {
   ffmpeg -loglevel error -y -i "$base" -c copy "$@"
 }
 remux_ts() {
-  remux "$@" -f hls -hls_time 4 -hls_playlist_type vod -hls_segment_filename "$dir/%03d.ts" "$dir/index.m3u8"
+  hls_ts remux "$@"
 }
 remux_fmp4() {
-  remux "$@" -f hls -hls_time 4 -hls_playlist_type vod -hls_segment_type fmp4 -hls_fmp4_init_filename init.mp4 \
+  hls_fmp4 remux "$@"
+}
+
+# Runs a command that ends in ffmpeg output options (`encode <seconds> ...`, `remux ...`) into an HLS
+# VOD in 4 s segments in "$dir": MPEG-TS or fMP4.
+hls_ts() {
+  "$@" -f hls -hls_time 4 -hls_playlist_type vod -hls_segment_filename "$dir/%03d.ts" "$dir/index.m3u8"
+}
+hls_fmp4() {
+  "$@" -f hls -hls_time 4 -hls_playlist_type vod -hls_segment_type fmp4 -hls_fmp4_init_filename init.mp4 \
     -hls_segment_filename "$dir/%03d.m4s" "$dir/index.m3u8"
 }
 
@@ -169,6 +179,95 @@ start webm-vp9-opus
 title='WebM, VP9 + Opus' url=$path/video.webm delivery=file container=webm codecs='vp9 opus'
 axis=container feature='Progressive, 10 s' source=synthetic firefox=ends chrome=ends
 encode 10 -c:v libvpx-vp9 -deadline realtime -cpu-used 8 -b:v 500k -c:a libopus -b:a 96k "$dir/video.webm"
+add
+
+# Codecs our HLS engine does not play (Firefox's case: Chrome plays HLS itself), each to fail naming
+# the codec. Outcomes as seen in headless Firefox 130 and Chrome 156. No HE-AAC: ffmpeg's aac encoder
+# has no HE profile, and few ffmpeg builds have libfdk_aac. 10 s each; where only the audio codec
+# differs, the H.264 of $base is copied and only the audio encoded.
+
+# The browser plays the file itself, or does not: no engine on the way.
+start mp4-hevc-aac
+title='MP4, faststart, HEVC + AAC' url=$path/video.mp4 delivery=file container=mp4 codecs='hevc aac'
+axis=codec feature='Progressive HEVC (hvc1): the browser decodes it or not' source=synthetic
+firefox='fails: NS_ERROR_DOM_MEDIA_METADATA_ERR, nothing on the player'
+chrome='ends, sound only: no picture (no HEVC decoder) and no error'
+encode 10 -c:v libx265 -preset ultrafast -x265-params log-level=error -tag:v hvc1 -pix_fmt yuv420p -g 50 \
+  -c:a aac -b:a 96k -ac 2 -movflags +faststart "$dir/video.mp4"
+add
+hevc=$dir/video.mp4
+
+# A codec in an fMP4 init section: the engine gives up on it at once, naming its sample entry. The
+# MP4's streams, copied.
+start hls-fmp4-hevc
+title='HLS, fMP4, HEVC + AAC' url=$path/index.m3u8 delivery=hls container=fmp4 codecs='hevc aac'
+axis=codec feature='HEVC video (hvc1)' source=synthetic
+firefox='fails: init section: hvc1 is a codec this player cannot play'
+chrome="fails: DECODER_ERROR_NOT_SUPPORTED (Chrome's HLS, no HEVC decoder), nothing on the player"
+hls_fmp4 ffmpeg -loglevel error -y -i "$hevc" -c copy
+add
+
+# Audio in MPEG-TS that the engine does not take: it drops the track and plays the picture.
+start hls-ts-ac3
+title='HLS, MPEG-TS, H.264 + AC-3' url=$path/index.m3u8 delivery=hls container=mpegts codecs='h264 ac3'
+axis=codec feature='AC-3 audio' source=synthetic
+firefox='ends, picture only: the AC-3 track is dropped without a message'
+chrome="ends, picture only: Chrome's HLS has no AC-3 decoder"
+hls_ts remux -t 10 -c:a ac3 -b:a 192k -ac 2
+add
+
+start hls-ts-eac3
+title='HLS, MPEG-TS, H.264 + E-AC-3' url=$path/index.m3u8 delivery=hls container=mpegts codecs='h264 eac3'
+axis=codec feature='E-AC-3 audio' source=synthetic
+firefox='ends, picture only: the E-AC-3 track is dropped without a message'
+chrome="ends, picture only: Chrome's HLS has no E-AC-3 decoder"
+hls_ts remux -t 10 -c:a eac3 -b:a 192k -ac 2
+add
+
+start hls-ts-mp3
+title='HLS, MPEG-TS, H.264 + MP3' url=$path/index.m3u8 delivery=hls container=mpegts codecs='h264 mp3'
+axis=codec feature='MP3 audio' source=synthetic
+firefox='ends, picture only: the MP3 track is dropped without a message' chrome=ends
+hls_ts remux -t 10 -c:a libmp3lame -b:a 128k -ac 2
+add
+
+# Packed audio: raw MP3 segments, no container around them. ffmpeg's hls muxer would wrap MP3 in
+# MPEG-TS, so the segment muxer cuts it and writes the playlist.
+start hls-mp3-packed
+title='HLS, packed audio, MP3' url=$path/index.m3u8 delivery=hls container=mp3 codecs=mp3
+axis=codec feature='Audio-only playlist of .mp3 segments' source=synthetic
+firefox='each segment skipped as not MPEG-TS; sits at the end, not ended, nothing on the player'
+chrome="fails: CHUNK_DEMUXER_ERROR_APPEND_FAILED (Chrome's HLS), nothing on the player"
+encode 10 -vn -c:a libmp3lame -b:a 128k -ac 2 -f segment -segment_time 4 -segment_format mp3 \
+  -segment_list "$dir/index.m3u8" -segment_list_type m3u8 "$dir/%03d.mp3"
+add
+
+start hls-fmp4-opus
+title='HLS, fMP4, H.264 + Opus' url=$path/index.m3u8 delivery=hls container=fmp4 codecs='h264 opus'
+axis=codec feature='Opus audio' source=synthetic
+firefox='fails: init section: Opus is a codec this player cannot play' chrome=ends
+hls_fmp4 remux -t 10 -c:a libopus -b:a 96k
+add
+
+start hls-fmp4-flac
+title='HLS, fMP4, H.264 + FLAC' url=$path/index.m3u8 delivery=hls container=fmp4 codecs='h264 flac'
+axis=codec feature='FLAC audio' source=synthetic
+firefox='fails: init section: fLaC is a codec this player cannot play' chrome=ends
+hls_fmp4 remux -t 10 -c:a flac -ac 2
+add
+
+start hls-fmp4-vp9
+title='HLS, fMP4, VP9 + AAC' url=$path/index.m3u8 delivery=hls container=fmp4 codecs='vp9 aac'
+axis=codec feature='VP9 video' source=synthetic
+firefox='fails: init section: vp09 is a codec this player cannot play' chrome=ends
+hls_fmp4 encode 10 -c:v libvpx-vp9 -deadline realtime -cpu-used 8 -b:v 500k -g 50 -c:a aac -b:a 96k -ac 2
+add
+
+start hls-fmp4-av1
+title='HLS, fMP4, AV1 + AAC' url=$path/index.m3u8 delivery=hls container=fmp4 codecs='av1 aac'
+axis=codec feature='AV1 video' source=synthetic
+firefox='fails: init section: av01 is a codec this player cannot play' chrome=ends
+hls_fmp4 encode 10 -c:v libaom-av1 -usage realtime -cpu-used 8 -row-mt 1 -tiles 2x2 -b:v 500k -g 50 -c:a aac -b:a 96k -ac 2
 add
 
 printf '[\n%s\n]\n' "$entries" > web/catalog/catalog.json

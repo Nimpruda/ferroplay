@@ -58,6 +58,10 @@ Firefox has none, so there it checks our engine.
 Axis `container`: MP4 (index first, which the "MP4, local" button and `?core=1` play, and last), WebM,
 and HLS in MPEG-TS and fMP4 (both tracks, or one; three qualities; a Sintel cut with B-frames).
 
+Axis `codec`: codecs our HLS engine does not play, each to fail naming the codec: HEVC, Opus, FLAC, VP9
+and AV1 in fMP4, AC-3, E-AC-3 and MP3 in MPEG-TS, MP3 packed audio; and HEVC as an MP4 file, which the
+browser decodes or not.
+
 ## Crates
 
 | Crate | Role | Depends on |
