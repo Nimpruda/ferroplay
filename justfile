@@ -40,11 +40,6 @@ e2e: build
 hls:
     ./make-hls.sh
 
-# Remake the test MP4 in web/media
-[group('native')]
-media:
-    ./make-media.sh
-
 # Remake the test media catalog in web/catalog (listed on the demo page)
 [group('native')]
 catalog:

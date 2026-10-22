@@ -3,7 +3,6 @@ web/player.wasm
 web/player-core.wasm
 web/hls/
 __pycache__/
-web/media/
 web/catalog/
 # Downloads kept between runs (catalog/sources/clip.sh). The folder itself is in git: compose mounts it
 # into the media service, and docker would make it, as root, were it missing.

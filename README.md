@@ -23,8 +23,7 @@ docker build --target ts2mp4 -t ts2mp4 . && docker run --rm -i ts2mp4 < seg.ts >
 ```
 
 The `Dockerfile` compiles dependencies in their own layer (cargo-chef), so a source change only
-rebuilds our crates. Media made by the containers lands in `web/hls`, `web/media` and `web/catalog`,
-as natively.
+rebuilds our crates. Media made by the containers lands in `web/hls` and `web/catalog`, as natively.
 
 Design notes, measurements and the traps we hit: [docs/learnings/](docs/learnings/README.md).
 
@@ -53,7 +52,11 @@ any; `make-catalog.sh` says how to add an entry and documents the fields.
 The page lists the entries under the player, grouped by axis. A click on an entry that declares
 plugins ticks exactly those (the ones the page lacks, like `hls` on `?core=1`, are dropped) and
 plays it in a new player; any other entry plays with the ticked plugins. It is for checks by hand:
-the e2e tests keep their own.
+the e2e tests keep their own. Chrome plays HLS itself, so there an HLS entry checks Chrome's player;
+Firefox has none, so there it checks our engine.
+
+Axis `container`: MP4 (index first, which the "MP4, local" button and `?core=1` play, and last), WebM,
+and HLS in MPEG-TS and fMP4 (both tracks, or one; three qualities; a Sintel cut with B-frames).
 
 ## Crates
 

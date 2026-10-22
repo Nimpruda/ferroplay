@@ -5,7 +5,9 @@
 # the ffmpeg output options and runs ffmpeg on its own inputs. synthetic: a test pattern with a tone (no
 # network); clip: a cut of the Sintel trailer, downloaded once to .cache/, where the content matters.
 # To add a source: one new file in catalog/sources/, nothing else.
-# To add an entry: `start <id>`, set its fields (see `add`), make its media in "$dir" with `encode`, `add`.
+# To add an entry: `start <id>`, set its fields (see `add`), make its media in "$dir" with `encode` (or
+# `remux`, when only the container differs from media made already), `add`. Another entry for the same
+# media: change the id and the fields that differ, `add` again.
 set -e
 cd "$(dirname "$0")"
 for file in catalog/sources/*.sh; do
@@ -43,6 +45,20 @@ encode() {
   "source_$source" "$@"
 }
 
+# The streams of $base (the first entry's MP4) copied, not encoded, into another container: the
+# arguments are the output options (-vn or -an first to keep one track). remux_ts and remux_fmp4 make
+# an HLS VOD in 4 s segments in "$dir".
+remux() {
+  ffmpeg -loglevel error -y -i "$base" -c copy "$@"
+}
+remux_ts() {
+  remux "$@" -f hls -hls_time 4 -hls_playlist_type vod -hls_segment_filename "$dir/%03d.ts" "$dir/index.m3u8"
+}
+remux_fmp4() {
+  remux "$@" -f hls -hls_time 4 -hls_playlist_type vod -hls_segment_type fmp4 -hls_fmp4_init_filename init.mp4 \
+    -hls_segment_filename "$dir/%03d.m4s" "$dir/index.m3u8"
+}
+
 # Lists the entry in catalog.json. Fields: title; url (from web/); delivery (file, hls); container;
 # codecs (space-separated); axis (container, codec, feature, fault: the page groups by it); feature or
 # fault (what the entry shows); source (a file in catalog/sources/); plugins (space-separated): the
@@ -60,13 +76,99 @@ add() {
   }"
 }
 
+# Containers. The faststart MP4 is the one synthetic encode the remuxes copy; its keyframes every 2 s
+# let HLS cut it in 4 s segments.
+
+# Progressive MP4, index (moov) first: plays and seeks before the whole file is in. The page's "MP4,
+# local" button and its ?core=1 default play it.
+start mp4-faststart-h264-aac
+title='MP4, faststart, H.264 + AAC' url=$path/video.mp4 delivery=file container=mp4 codecs='h264 aac'
+axis=container feature='Progressive, 20 s, index first' source=synthetic firefox=ends chrome=ends
+encode 20 -c:v libx264 -preset veryfast -pix_fmt yuv420p -g 50 -c:a aac -b:a 96k -ac 2 -movflags +faststart \
+  "$dir/video.mp4"
+add
+base=$dir/video.mp4
+
+# The same, index (moov) last: the browser reads the end of the file before it can start.
+start mp4-h264-aac
+title='MP4, index last, H.264 + AAC' url=$path/video.mp4 delivery=file container=mp4 codecs='h264 aac'
+axis=container feature='Progressive, 20 s, index at the end' source=synthetic firefox=ends chrome=ends
+remux "$dir/video.mp4"
+add
+
 # HLS with MPEG-TS segments: what the Rust engine was first built for.
 start hls-ts-h264-aac
 title='HLS, MPEG-TS, H.264 + AAC' url=$path/index.m3u8 delivery=hls container=mpegts codecs='h264 aac'
-axis=container feature='VOD, 12 s in 4 s segments' source=synthetic firefox=ends chrome=ends
-encode 12 -c:v libx264 -preset veryfast -pix_fmt yuv420p -g 50 -c:a aac -b:a 96k -ac 2 \
-  -f hls -hls_time 4 -hls_playlist_type vod -hls_segment_type mpegts \
-  -hls_segment_filename "$dir/%03d.ts" "$dir/index.m3u8"
+axis=container feature='VOD, 20 s in 4 s segments' source=synthetic firefox=ends chrome=ends
+remux_ts
+add
+
+# HLS with fMP4 segments: an init section (EXT-X-MAP), then segments the browser takes as they are.
+start hls-fmp4-h264-aac
+title='HLS, fMP4, H.264 + AAC' url=$path/index.m3u8 delivery=hls container=fmp4 codecs='h264 aac'
+axis=container feature='VOD, 20 s in 4 s segments' source=synthetic firefox=ends chrome=ends
+remux_fmp4
+add
+
+# One track only, in each segment type.
+start hls-ts-audio
+title='HLS, MPEG-TS, audio only (AAC)' url=$path/index.m3u8 delivery=hls container=mpegts codecs=aac
+axis=container feature='VOD, 20 s, no video track' source=synthetic firefox=ends chrome=ends
+remux_ts -vn
+add
+
+start hls-fmp4-audio
+title='HLS, fMP4, audio only (AAC)' url=$path/index.m3u8 delivery=hls container=fmp4 codecs=aac
+axis=container feature='VOD, 20 s, no video track' source=synthetic firefox=ends chrome=ends
+remux_fmp4 -vn
+add
+
+start hls-ts-video
+title='HLS, MPEG-TS, video only (H.264)' url=$path/index.m3u8 delivery=hls container=mpegts codecs=h264
+axis=container feature='VOD, 20 s, no audio track' source=synthetic firefox=ends chrome=ends
+remux_ts -an
+add
+
+start hls-fmp4-video
+title='HLS, fMP4, video only (H.264)' url=$path/index.m3u8 delivery=hls container=fmp4 codecs=h264
+axis=container feature='VOD, 20 s, no audio track' source=synthetic firefox=ends chrome=ends
+remux_fmp4 -an
+add
+
+# Three qualities of fMP4 under a master playlist; 2 s keyframes keep their segments aligned.
+start hls-fmp4-qualities
+title='HLS, fMP4, 3 qualities, H.264 + AAC' url=$path/master.m3u8 delivery=hls container=fmp4 codecs='h264 aac'
+axis=container feature='VOD, 12 s, 180p, 270p and 360p' source=synthetic firefox=ends chrome=ends
+encode 12 -filter_complex '[0:v]split=3[a][b][c];[a]scale=-2:180[180];[b]scale=-2:270[270];[c]null[360]' \
+  -map '[180]' -map '[270]' -map '[360]' -map 1:a -map 1:a -map 1:a \
+  -c:v libx264 -preset veryfast -pix_fmt yuv420p -g 50 -b:v:0 200k -b:v:1 400k -b:v:2 800k -c:a aac -b:a 96k -ac 2 \
+  -f hls -hls_time 4 -hls_playlist_type vod -hls_segment_type fmp4 -hls_fmp4_init_filename init.mp4 \
+  -hls_segment_filename "$dir/%v/%03d.m4s" -master_pl_name master.m3u8 \
+  -var_stream_map 'v:0,a:0,name:180p v:1,a:1,name:270p v:2,a:2,name:360p' "$dir/%v/index.m3u8"
+add
+
+# Real content in fMP4 with B-frames: Media Source ignores the edit list that hides the B-frame delay,
+# so the buffer starts 83 ms in. Firefox was seen waiting at that gap without the gaps plugin;
+# headless Firefox 130 plays on, so here it is, with the gaps plugin left out, to try by hand.
+start hls-fmp4-clip
+title='HLS, fMP4, Sintel with B-frames, no gaps plugin' url=$path/index.m3u8 delivery=hls container=fmp4
+codecs='h264 aac' axis=container feature='VOD, 12 s, B-frames: the buffer starts 83 ms in' source=clip plugins=hls
+firefox=ends chrome=ends
+encode 12 -c:v libx264 -preset veryfast -bf 3 -g 48 -c:a aac -b:a 96k -ac 2 \
+  -f hls -hls_time 4 -hls_playlist_type vod -hls_segment_type fmp4 -hls_fmp4_init_filename init.mp4 \
+  -hls_segment_filename "$dir/%03d.m4s" "$dir/index.m3u8"
+add
+
+# The same media and fields (no `start`), with the gaps plugin.
+id=hls-fmp4-clip-gaps title='HLS, fMP4, Sintel with B-frames, gaps plugin' plugins='hls gaps'
+feature='VOD, 12 s, B-frames: the buffer starts 83 ms in, jumped'
+add
+
+# Progressive WebM, VP9 + Opus: both browsers play it themselves.
+start webm-vp9-opus
+title='WebM, VP9 + Opus' url=$path/video.webm delivery=file container=webm codecs='vp9 opus'
+axis=container feature='Progressive, 10 s' source=synthetic firefox=ends chrome=ends
+encode 10 -c:v libvpx-vp9 -deadline realtime -cpu-used 8 -b:v 500k -c:a libopus -b:a 96k "$dir/video.webm"
 add
 
 printf '[\n%s\n]\n' "$entries" > web/catalog/catalog.json

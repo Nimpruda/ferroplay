@@ -1,5 +1,5 @@
 # Dev stack: `just up` (server + demo media), `just up-live` adds a live stream. See the justfile.
-# Generated media lands in the repo's web/hls, web/media and web/catalog, shared with the native workflow.
+# Generated media lands in the repo's web/hls and web/catalog, shared with the native workflow.
 
 x-media: &media
   build: { context: ., target: media }
@@ -15,7 +15,6 @@ services:
     ports: ["127.0.0.1:${PORT:-8080}:8080"]
     volumes:
       - ./web/hls:/app/web/hls:ro
-      - ./web/media:/app/web/media:ro
       - ./web/catalog:/app/web/catalog:ro
     depends_on:
       media: { condition: service_completed_successfully }
@@ -39,7 +38,7 @@ services:
     shm_size: 1gb # browsers crash on Docker's 64 MB default
     volumes: # read-write: the live test writes web/hls/live-e2e and removes it after
       - ./web/hls:/src/web/hls
-      - ./web/media:/src/web/media
+      - ./web/catalog:/src/web/catalog:ro # the ?core=1 page's default MP4
     depends_on:
       media: { condition: service_completed_successfully }
     profiles: [e2e]

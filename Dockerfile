@@ -36,7 +36,7 @@ FROM debian:trixie-slim AS media
 RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
-COPY make-demo.sh make-hls.sh make-media.sh make-catalog.sh make-live.sh ./
+COPY make-demo.sh make-hls.sh make-catalog.sh make-live.sh ./
 COPY catalog catalog
 
 # e2e/run.py builds and runs our crates itself, so this keeps the toolchain, with them prebuilt.
