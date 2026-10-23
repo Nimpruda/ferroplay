@@ -5,39 +5,21 @@ About 31 KB gzipped in total (wasm 25 KB, `player.js` 4.9 KB, CSS 1 KB), or 13 K
 
 ## Prerequisites
 
-`just install` adds the wasm target and lists each tool below as found or missing, with the recipes
-that need it and the command to install it. It never runs sudo; run it again after installing.
-
-Required (`just build`, `serve`, `test`): [just](https://just.systems), [rustup](https://rustup.rs)
-with recent stable Rust (edition 2024) and the `wasm32-unknown-unknown` target, a C compiler and linker.
-The server's HTTPS client is rustls, so no OpenSSL.
+To build, serve and test: [just](https://just.systems), [rustup](https://rustup.rs) (stable, `wasm32-unknown-unknown`)
+and a C compiler. Optional: `wasm-opt` shrinks the wasm, `ffmpeg` makes the demo media. The e2e tests
+and `just shot` need python3, Firefox and Chrome/Chromium; the hooks need [prek](https://github.com/j178/prek),
+hadolint and docker. `just install` adds the wasm target and lists what is missing with its install command.
 
 ```sh
-sudo apt-get install -y build-essential just   # Debian/Ubuntu (just: Debian 13+, Ubuntu 24.04+)
-xcode-select --install && brew install just    # macOS
-curl https://sh.rustup.rs -sSf | sh            # both
-```
-
-Optional, skipped when absent: `wasm-opt` (smaller wasm), `ffmpeg` (demo media and catalog).
-
-```sh
-sudo apt-get install -y binaryen ffmpeg   # Debian/Ubuntu
-brew install binaryen ffmpeg              # macOS
-```
-
-Per recipe: `e2e` needs python3 (stdlib only), Firefox and Chrome or Chromium, and ffmpeg;
-`shot` needs Chrome or Chromium; `hls`, `catalog`, `live` need ffmpeg; `lint` needs
-[prek](https://github.com/j178/prek), hadolint and docker; the docker group needs only docker (with compose).
-
-```sh
-sudo apt-get install -y python3 firefox chromium docker.io docker-compose-v2 && pipx install prek  # Debian/Ubuntu; hadolint: its GitHub releases
-brew install python prek hadolint && brew install --cask firefox google-chrome docker            # macOS
+curl https://sh.rustup.rs -sSf | sh
+sudo apt-get install -y build-essential just binaryen ffmpeg python3 firefox chromium docker.io docker-compose-v2  # Debian 13+/Ubuntu 24.04+
+xcode-select --install && brew install just binaryen ffmpeg python prek hadolint && brew install --cask firefox google-chrome docker  # macOS
 ```
 
 ## Quick start
 
 ```sh
-just install                               # once: the wasm target, and what is missing
+just install                               # once: the wasm target, and a check of the tools above
 prek install                               # once: the git hooks in prek.toml (also need hadolint, docker)
 ./build.sh            # wasm -> web/player.wasm, web/player-core.wasm (and the demo media, if ffmpeg is installed)
 cargo run -p server   # http://127.0.0.1:8080
