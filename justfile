@@ -1,4 +1,6 @@
-# Dev tasks. Native recipes need Rust, ffmpeg and the browsers; docker ones need only Docker.
+# Dev tasks. Native recipes need rustup (stable, wasm32-unknown-unknown) and a C compiler; ffmpeg
+# and wasm-opt are optional; e2e and shot need python3 and Firefox/Chrome; lint needs prek, hadolint
+# and docker. Docker recipes need only Docker. `just install` checks all of it (README: Prerequisites).
 
 set positional-arguments
 
@@ -9,6 +11,11 @@ export HOST_GID := `id -g`
 [private]
 default:
     @just --list
+
+# Add the wasm target; list each prerequisite as found or missing, with its install command
+[group('native')]
+install:
+    ./install.sh
 
 # Build the wasm core into web/, with and without HLS (and the demo media, if ffmpeg is installed)
 [group('native')]

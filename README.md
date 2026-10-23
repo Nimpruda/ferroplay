@@ -3,8 +3,41 @@
 A video.js replacement: a Rust core compiled to WebAssembly plus a thin DOM shim, with HLS.
 About 31 KB gzipped in total (wasm 25 KB, `player.js` 4.9 KB, CSS 1 KB), or 13 KB with the core-only wasm (6.9 KB).
 
+## Prerequisites
+
+`just install` adds the wasm target and lists each tool below as found or missing, with the recipes
+that need it and the command to install it. It never runs sudo; run it again after installing.
+
+Required (`just build`, `serve`, `test`): [just](https://just.systems), [rustup](https://rustup.rs)
+with recent stable Rust (edition 2024) and the `wasm32-unknown-unknown` target, a C compiler and linker.
+The server's HTTPS client is rustls, so no OpenSSL.
+
 ```sh
-rustup target add wasm32-unknown-unknown   # once
+sudo apt-get install -y build-essential just   # Debian/Ubuntu (just: Debian 13+, Ubuntu 24.04+)
+xcode-select --install && brew install just    # macOS
+curl https://sh.rustup.rs -sSf | sh            # both
+```
+
+Optional, skipped when absent: `wasm-opt` (smaller wasm), `ffmpeg` (demo media and catalog).
+
+```sh
+sudo apt-get install -y binaryen ffmpeg   # Debian/Ubuntu
+brew install binaryen ffmpeg              # macOS
+```
+
+Per recipe: `e2e` needs python3 (stdlib only), Firefox and Chrome or Chromium, and ffmpeg;
+`shot` needs Chrome or Chromium; `hls`, `catalog`, `live` need ffmpeg; `lint` needs
+[prek](https://github.com/j178/prek), hadolint and docker; the docker group needs only docker (with compose).
+
+```sh
+sudo apt-get install -y python3 firefox chromium docker.io docker-compose-v2 && pipx install prek  # Debian/Ubuntu; hadolint: its GitHub releases
+brew install python prek hadolint && brew install --cask firefox google-chrome docker            # macOS
+```
+
+## Quick start
+
+```sh
+just install                               # once: the wasm target, and what is missing
 prek install                               # once: the git hooks in prek.toml (also need hadolint, docker)
 ./build.sh            # wasm -> web/player.wasm, web/player-core.wasm (and the demo media, if ffmpeg is installed)
 cargo run -p server   # http://127.0.0.1:8080
