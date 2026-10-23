@@ -8,3 +8,4 @@ web/catalog/
 # into the media service, and docker would make it, as root, were it missing.
 .cache/*
 !.cache/.gitkeep
+shots/

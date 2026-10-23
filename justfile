@@ -50,6 +50,11 @@ catalog:
 live *clip:
     ./make-live.sh "$@"
 
+# Small desktop and mobile screenshots of a page of the running server, plus its text, into shots/
+[group('native')]
+shot path='/' *rest:
+    ./screenshot.sh "$@"
+
 # Server and demo media on http://127.0.0.1:8080, rebuilt from the sources
 [group('docker')]
 up:
