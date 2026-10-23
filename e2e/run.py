@@ -272,10 +272,8 @@ def unusable(url):
         b = Chrome(init_script=HIDE_NATIVE_HLS)
         try:
             open_page(b, f'{url}?play={path}&plugins=hls', play=False)
-            shown = until(b, "document.querySelector('.vp').dataset.error", 15)
-            error = b.js("document.querySelector('.vp').dataset.error")
-            check('chrome: unusable segments stop playback and say why on the player',
-                  shown and 'no MPEG-TS media' in error, error)
+            error = shown_error(b)
+            check('chrome: unusable segments stop playback and say why on the player', error and 'no MPEG-TS media' in error, error)
             warnings = [log for log in b.logs if 'no MPEG-TS media' in log]
             check('chrome: each unusable segment is warned about in the console', len(warnings) >= 3, b.logs)
         finally:
@@ -287,12 +285,29 @@ def media_error(url):
     b = Firefox()
     try:
         open_page(b, f'{url}?play=catalog/mp4-hevc-aac/video.mp4')
-        until(b, "document.querySelector('.vp').dataset.error", 15)
-        error = b.js("document.querySelector('.vp').dataset.error")
+        error = shown_error(b)
         check('firefox: a file it cannot decode shows its media error on the player',
               error and 'NS_ERROR_DOM_MEDIA_METADATA_ERR' in error, error)
     finally:
         b.close()
+
+
+def shown_error(b):
+    """The error the player shows (its data-error), once it shows one; None after 15 s without."""
+    until(b, "document.querySelector('.vp').dataset.error", 15)
+    return b.js("document.querySelector('.vp').dataset.error")
+
+
+def plays_to_end(url, path, seconds, what):
+    """A stream that plays to the end in every browser with the gaps plugin, without an error or a console line."""
+    for name, browser in BROWSERS:
+        b = browser()
+        try:
+            open_page(b, f'{url}?play={path}&plugins=gaps,hls', play=False)
+            ended, s = until(b, f"{V}.ended", seconds), state(b)
+            check(f'{name}: {what} plays to the end', ended and not s['error'] and not b.logs, f'{s}, {b.logs}')
+        finally:
+            b.close()
 
 
 def skipped_segment(url):
@@ -322,32 +337,13 @@ def fmp4_start_gap(url):
     playlist = ('#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-TARGETDURATION:1\n#EXT-X-MAP:URI="fmp4-init.mp4"\n'
                 '#EXTINF:1,\nfmp4-0.m4s\n#EXTINF:1,\nfmp4-1.m4s\n#EXT-X-ENDLIST\n')
     with served_playlist('fmp4-e2e', playlist, ('fmp4-init.mp4', 'fmp4-0.m4s', 'fmp4-1.m4s')) as path:
-        for name, browser in BROWSERS:
-            b = browser()
-            try:
-                open_page(b, f'{url}?play={path}&plugins=gaps,hls', play=False)
-                ended, s = until(b, f"{V}.ended", 20), state(b)
-                check(f'{name}: an fMP4 stream whose buffer starts after 0 plays to the end', ended and not s['error'] and not b.logs,
-                      f'{s}, {b.logs}')
-            finally:
-                b.close()
+        plays_to_end(url, path, 20, 'an fMP4 stream whose buffer starts after 0')
 
 
 def small_hole(url):
-    """The catalog's one-frame hole (0.04 s at 6 s, from ./make-catalog.sh): Chrome stops 0.07 s short of the range
-    before it, and the gaps plugin jumps the hole all the same, so it plays to the end everywhere."""
-    path = 'catalog/hls-ts-hole-small/index.m3u8'
-    if not os.path.exists(os.path.join(ROOT, 'web', path)):
-        print(f'skipped: {path} missing, run ./make-catalog.sh')
-        return
-    for name, browser in BROWSERS:
-        b = browser()
-        try:
-            open_page(b, f'{url}?play={path}&plugins=gaps,hls', play=False)
-            ended, s = until(b, f"{V}.ended", 30), state(b)
-            check(f'{name}: a VOD plays over a one-frame hole, to the end', ended and not s['error'], s)
-        finally:
-            b.close()
+    """The catalog's one-frame hole (0.04 s at 6 s): Chrome stops 0.07 s short of the range before it, and the gaps
+    plugin jumps the hole all the same, so it plays to the end everywhere."""
+    plays_to_end(url, 'catalog/hls-ts-hole-small/index.m3u8', 30, 'a VOD with a one-frame hole')
 
 
 def slow_network(url):
@@ -365,6 +361,8 @@ def main():
     for needed in ('web/player.wasm', 'web/player-core.wasm', 'web/hls/master.m3u8'):
         if not os.path.exists(os.path.join(ROOT, needed)):
             sys.exit(f'missing {needed}: run ./build.sh (with ffmpeg installed) first')
+    if not os.path.exists(os.path.join(ROOT, 'web/catalog/catalog.json')):
+        sys.exit('missing web/catalog: run ./make-catalog.sh first')
     converter()
 
     port = free_port()

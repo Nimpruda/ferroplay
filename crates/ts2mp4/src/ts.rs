@@ -88,15 +88,13 @@ pub fn sniff(data: &[u8]) -> Option<&'static str> {
     match data {
         [0x47, ..] => None,
         // An ID3v2 tag: 10 bytes and a size of four 7-bit bytes. Packed audio starts with one for its timestamp.
-        [b'I', b'D', b'3', _, _, _, size @ ..] if size.len() >= 4 => {
-            let size = size[..4].iter().fold(0, |n, &b| n << 7 | (b & 0x7F) as usize);
+        [b'I', b'D', b'3', _, _, _, a, b, c, d, ..] => {
+            let size = [a, b, c, d].iter().fold(0, |n, &&b| n << 7 | (b & 0x7F) as usize);
             Some(data.get(10 + size..).and_then(sniff).unwrap_or("packed audio (ID3)"))
         }
         [0xFF, b, ..] if b & 0xF6 == 0xF0 => Some("AAC packed audio (ADTS)"),
         [0xFF, b, ..] if b & 0xE0 == 0xE0 => Some("MP3 packed audio"),
-        [_, _, _, _, b'f', b't', b'y', b'p', ..]
-        | [_, _, _, _, b's', b't', b'y', b'p', ..]
-        | [_, _, _, _, b'm', b'o', b'o', b'f', ..] => Some("fMP4 segment without an EXT-X-MAP"),
+        _ if matches!(data.get(4..8), Some(b"ftyp" | b"styp" | b"moof")) => Some("fMP4 segment without an EXT-X-MAP"),
         _ => None,
     }
 }
@@ -170,22 +168,22 @@ fn streams(payload: &[u8]) -> Option<Streams> {
         match e[0] {
             0x1b => found.video = found.video.or(pid),
             0x0f => found.audio = found.audio.or(pid),
-            kind => {
-                let name = match kind {
-                    0x03 | 0x04 => Some("MPEG audio"),
-                    0x81 => Some("AC-3"),
-                    0x87 => Some("E-AC-3"),
-                    0x06 => s.get(i + 5..end).and_then(dolby),
-                    _ => None,
-                };
-                if let Some(name) = name.filter(|n| !found.skipped.contains(n)) {
-                    found.skipped.push(name);
-                }
-            }
+            kind => found.skipped.extend(unplayable(kind, s.get(i + 5..end).unwrap_or(&[])).filter(|n| !found.skipped.contains(n))),
         }
         i = end;
     }
     Some(found)
+}
+
+/// A stream type and its descriptors -> the name of the audio codec, when it is one this player cannot play.
+fn unplayable(kind: u8, descriptors: &[u8]) -> Option<&'static str> {
+    match kind {
+        0x03 | 0x04 => Some("MPEG audio"),
+        0x81 => Some("AC-3"),
+        0x87 => Some("E-AC-3"),
+        0x06 => dolby(descriptors),
+        _ => None,
+    }
 }
 
 /// The descriptors of a PES private data stream (type 0x06) -> "AC-3" or "E-AC-3" when they say it is one.

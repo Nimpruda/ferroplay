@@ -29,6 +29,11 @@ pub use fmp4::{Init, Track, offset, read_init, shift};
 pub use mp4::{fragment, init};
 pub use ts::{Audio, Media, Sample, Video, demux, demux_near, sniff};
 
+/// The message for a codec this player cannot play, an fMP4 sample entry's or an MPEG-TS stream's.
+pub fn cannot_play(name: &str) -> String {
+    [name, " is a codec this player cannot play"].concat()
+}
+
 /// Why `fragment` and `shift` refuse a segment that would start before 0.
 const BEFORE_START: &str = "a decode time before the start of the stream";
 

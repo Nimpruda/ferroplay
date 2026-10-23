@@ -12,7 +12,7 @@ const PLUGINS = ['keyboard', 'loop', 'startAt', 'abLoop', 'hls', 'gaps'];
 // throw when registered: a typo must not silently keep the default.
 const KNOBS = ['ahead', 'behind', 'holdback', 'safety', 'retries', 'liveRetries', 'initRetries'];
 // MediaError codes, by number, for a browser that gives no message.
-const MEDIA_ERRORS = [, 'MEDIA_ERR_ABORTED', 'MEDIA_ERR_NETWORK', 'MEDIA_ERR_DECODE', 'MEDIA_ERR_SRC_NOT_SUPPORTED'];
+const MEDIA_ERRORS = ['', 'MEDIA_ERR_ABORTED', 'MEDIA_ERR_NETWORK', 'MEDIA_ERR_DECODE', 'MEDIA_ERR_SRC_NOT_SUPPORTED'];
 const ARROWS = { ArrowLeft: '←', ArrowUp: '↑', ArrowRight: '→', ArrowDown: '↓' };
 
 const icon = (cls, d) => `<svg class="${cls}" viewBox="0 0 24 24"><path d="${d}"/></svg>`;
@@ -235,7 +235,7 @@ export function player(video, plugins = {}) {
     // now if the source has changed since.
     error: () => {
       const e = video.error;
-      if (e) fail(e.message || MEDIA_ERRORS[e.code] || `MediaError ${e.code}`);
+      if (e) fail(e.message || MEDIA_ERRORS[e.code]);
     },
   };
   for (const [type, fn] of Object.entries(media)) video.addEventListener(type, fn);

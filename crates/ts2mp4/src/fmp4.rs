@@ -41,7 +41,7 @@ fn read(data: &[u8]) -> Result<Init, String> {
                 entry.get(78..).and_then(|c| child(c, b"avcC")).and_then(|avcc| avcc.get(1..4)).map(codec::avc1)
             }
             b"mp4a" => aac_object(entry).map(codec::mp4a),
-            _ => return Err([name(kind), " is a codec this player cannot play"].concat()),
+            _ => return Err(crate::cannot_play(name(kind))),
         };
         codecs.push(codec.ok_or_else(|| ["an unreadable ", name(kind), " sample entry"].concat())?);
         tracks.push(Track { id, timescale });
