@@ -82,6 +82,25 @@ pub fn demux_near(ts: &[u8], near: Option<i64>) -> Media {
     Media { video, audio: audio(&audio_pes, near), skipped }
 }
 
+/// What a segment that is not MPEG-TS is, if its first bytes say so: packed audio (MP3 or ADTS frames, after an
+/// ID3 tag or not) or an fMP4 box. `None` for MPEG-TS (a sync byte first) and for anything else.
+pub fn sniff(data: &[u8]) -> Option<&'static str> {
+    match data {
+        [0x47, ..] => None,
+        // An ID3v2 tag: 10 bytes and a size of four 7-bit bytes. Packed audio starts with one for its timestamp.
+        [b'I', b'D', b'3', _, _, _, size @ ..] if size.len() >= 4 => {
+            let size = size[..4].iter().fold(0, |n, &b| n << 7 | (b & 0x7F) as usize);
+            Some(data.get(10 + size..).and_then(sniff).unwrap_or("packed audio (ID3)"))
+        }
+        [0xFF, b, ..] if b & 0xF6 == 0xF0 => Some("AAC packed audio (ADTS)"),
+        [0xFF, b, ..] if b & 0xE0 == 0xE0 => Some("MP3 packed audio"),
+        [_, _, _, _, b'f', b't', b'y', b'p', ..]
+        | [_, _, _, _, b's', b't', b'y', b'p', ..]
+        | [_, _, _, _, b'm', b'o', b'o', b'f', ..] => Some("fMP4 segment without an EXT-X-MAP"),
+        _ => None,
+    }
+}
+
 /// PTS and DTS are 33 bits at 90 kHz: they wrap every 2^33 ticks.
 const WRAP: i64 = 1 << 33;
 
@@ -406,6 +425,19 @@ impl Bits<'_> {
 mod tests {
     use super::*;
     use alloc::vec;
+
+    #[test]
+    fn sniff_names_what_is_not_mpeg_ts() {
+        assert_eq!(sniff(&[0x47, 0x40, 0, 0x10]), None);
+        assert_eq!(sniff(b"<html>"), None);
+        assert_eq!(sniff(&[0xFF, 0xFB, 0x90, 0x64]), Some("MP3 packed audio"));
+        assert_eq!(sniff(&adts(2, 4, 2, 0)), Some("AAC packed audio (ADTS)"));
+        let id3 = [&b"ID3\x04\0\0\0\0\0\x01\0"[..], &adts(2, 4, 2, 0)].concat();
+        assert_eq!(sniff(&id3), Some("AAC packed audio (ADTS)"));
+        assert_eq!(sniff(b"ID3\x04\0\0\0\0\0\0"), Some("packed audio (ID3)"));
+        assert_eq!(sniff(b"\0\0\0\x18ftypiso6"), Some("fMP4 segment without an EXT-X-MAP"));
+        assert_eq!(sniff(b"\0\0\0\x18moof"), Some("fMP4 segment without an EXT-X-MAP"));
+    }
 
     /// An 8-byte ADTS frame (no CRC) of AAC object type `object`, rate index `freq` and `channels`, with a one-byte payload.
     fn adts(object: u8, freq: u8, channels: u8, payload: u8) -> [u8; 8] {

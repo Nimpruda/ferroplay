@@ -130,6 +130,10 @@ pub struct Hls {
     unplayable: Vec<&'static str>,
     /// The `EXT-X-MAP` of that init segment and its tracks, when it came from the stream (fMP4).
     map: Option<(Map, Vec<Track>)>,
+    /// Whether any segment was appended: a VOD that runs out without one fails rather than sit at its end.
+    played: bool,
+    /// Why the last download could not be used: what a VOD that runs out without a segment gives up on.
+    reason: String,
 }
 
 #[derive(Clone, Copy)]
@@ -276,10 +280,16 @@ impl Hls {
                 };
                 let Some(segment) = self.variants[v].segment(sequence) else { return Ok(()) };
                 let (start, end, fmp4) = (segment.start, segment.end(), segment.map.is_some());
+                // Not MPEG-TS, but a format that is known: refused by name, at once, and skipped like any other.
+                if let Some(format) = (!fmp4).then(|| ts2mp4::sniff(&data)).flatten() {
+                    self.appended.push((sequence, end, Some(start)));
+                    return Err(Failure::Unplayable([&self.fetching, ": ", format, " is a format this player cannot play"].concat()));
+                }
                 let fragment = if fmp4 { self.fmp4_fragment(data, start) } else { self.ts_fragment(&data, start, sequence, out) };
                 // Even if unusable: skip a broken segment rather than retry it forever.
                 self.appended.push((sequence, end, fragment.is_err().then_some(start)));
                 let fragment = fragment.map_err(|why| Failure::Unusable(["segment ", &self.fetching, " skipped: ", &why].concat()))?;
+                self.played = true;
                 out.push(Cmd::Append(fragment));
             }
             Request::Init(v, sequence) => {
@@ -350,6 +360,7 @@ impl Hls {
         if !matches!(failure, Failure::Download(_)) {
             out.push(Cmd::Warn(reason.clone()));
         }
+        self.reason.clone_from(reason);
         if self.retry.fail(self.retries(&failure)) {
             out.push(Cmd::Fail(["HLS: giving up: ", reason].concat()));
         }
@@ -521,8 +532,13 @@ impl Plugin for Hls {
         // again after any change reopens a finished Media Source. Never while live: a live playlist is not finished.
         let ended_now = was_live && !self.live;
         let changed = cmds.iter().any(|c| matches!(c, Cmd::Append(_) | Cmd::Remove(_)));
-        let last = self.variants.get(self.current).and_then(|v| v.segments.last());
-        if last.is_some_and(|s| self.loaded(s.sequence)) && !self.live && (changed || ended_now) {
+        let segments = self.variants.get(self.current).map_or(&[][..], |v| &v.segments);
+        let finished = segments.last().is_some_and(|s| self.loaded(s.sequence)) && !self.live;
+        if finished && !self.played && !self.retry.gave_up && segments.iter().all(|s| self.loaded(s.sequence)) {
+            // Every segment was skipped: there is nothing to play.
+            self.retry.gave_up = true;
+            cmds.push(Cmd::Fail(["HLS: giving up: no segment could be used; the last: ", &self.reason].concat()));
+        } else if finished && (changed || ended_now) {
             cmds.push(Cmd::End);
         }
         out.extend(cmds.into_iter().map(Intent::Cmd));

@@ -22,7 +22,7 @@ fn fails_with(cmds: &[Cmd], reason: &str) -> bool {
     matches!(cmds.last(), Some(Cmd::Fail(message)) if message.contains(reason))
 }
 
-/// What an fMP4 segment, or an HTML page served with 200, looks like to the MPEG-TS demuxer: nothing.
+/// What an HTML page served with 200 looks like to the MPEG-TS demuxer: nothing, and no known format either.
 const NOT_TS: &[u8] = b"<html>not a transport stream</html>";
 
 const MASTER: &str = "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=500000\nlow.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=5000000\nhigh.m3u8\n";
@@ -299,6 +299,40 @@ fn unusable_segments_in_a_row_fail_the_stream_once() {
     assert!(matches!(&cmds[..], [Cmd::Warn(_), Cmd::Fail(_)]), "{cmds:?}");
     assert!(fails_with(&cmds, "giving up: segment https://cdn.test/s3.ts skipped: no MPEG-TS media"), "{cmds:?}");
     assert_eq!(p.dispatch(Event::Saw(Fact::Time(1.0))), [], "said once, and nothing more is downloaded");
+}
+
+#[test]
+fn packed_audio_is_refused_by_name_at_once() {
+    // An ID3 tag (its timestamp), then MP3 frames: an HLS packed audio segment.
+    let mp3 = [&b"ID3\x04\0\0\0\0\0\x02\0\0"[..], &[0xFF, 0xFB, 0x90, 0x64]].concat();
+    for (data, format) in [(&mp3[..], "MP3 packed audio"), (&[0xFF, 0xF1, 0x50, 0x80][..], "AAC packed audio (ADTS)")] {
+        let mut p = playing("https://cdn.test/movie.m3u8");
+        p.dispatch(loaded(window("s", 0, 10, 2.0).as_bytes()));
+        let cmds = p.dispatch(loaded(data));
+        let reason = format!("https://cdn.test/s0.ts: {format} is a format this player cannot play");
+        assert_eq!(cmds[0], Cmd::Warn(reason.clone()));
+        assert!(fails_with(&cmds, &reason), "{cmds:?}");
+    }
+}
+
+#[test]
+fn a_vod_with_no_usable_segment_fails_at_its_end() {
+    let mut p = playing("https://cdn.test/movie.m3u8");
+    p.dispatch(loaded(window("s", 0, 3, 2.0).as_bytes()));
+    p.dispatch(loaded(NOT_TS));
+    p.dispatch(loaded(NOT_TS));
+    let cmds = p.dispatch(loaded(NOT_TS));
+    assert!(fails_with(&cmds, "no segment could be used; the last: segment https://cdn.test/s2.ts skipped"), "{cmds:?}");
+    assert_eq!(p.dispatch(Event::Saw(Fact::Time(1.0))), [], "said once");
+}
+
+#[test]
+fn a_vod_that_played_a_segment_ends_though_its_last_ones_are_skipped() {
+    let mut p = playing("https://cdn.test/movie.m3u8");
+    p.dispatch(loaded(window("s", 0, 3, 2.0).as_bytes()));
+    p.dispatch(loaded(SAMPLE));
+    p.dispatch(loaded(NOT_TS));
+    assert_eq!(p.dispatch(loaded(NOT_TS)), [Cmd::Warn("segment https://cdn.test/s2.ts skipped: no MPEG-TS media this player can play".into())]);
 }
 
 #[test]

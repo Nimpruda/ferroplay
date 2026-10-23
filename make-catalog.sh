@@ -239,7 +239,7 @@ add
 start hls-mp3-packed
 title='HLS, packed audio, MP3' url=$path/index.m3u8 delivery=hls container=mp3 codecs=mp3
 axis=codec feature='Audio-only playlist of .mp3 segments' source=synthetic
-firefox='each segment skipped as not MPEG-TS; sits at the end, not ended, nothing on the player'
+firefox='fails at once naming it: MP3 packed audio is a format this player cannot play'
 chrome="fails: CHUNK_DEMUXER_ERROR_APPEND_FAILED (Chrome's HLS), shown on the player"
 encode 10 -vn -c:a libmp3lame -b:a 128k -ac 2 -f segment -segment_time 4 -segment_format mp3 \
   -segment_list "$dir/index.m3u8" -segment_list_type m3u8 "$dir/%03d.mp3"

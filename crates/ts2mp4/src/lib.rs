@@ -27,7 +27,7 @@ mod ts;
 use alloc::{string::String, vec::Vec};
 pub use fmp4::{Init, Track, offset, read_init, shift};
 pub use mp4::{fragment, init};
-pub use ts::{Audio, Media, Sample, Video, demux, demux_near};
+pub use ts::{Audio, Media, Sample, Video, demux, demux_near, sniff};
 
 /// Why `fragment` and `shift` refuse a segment that would start before 0.
 const BEFORE_START: &str = "a decode time before the start of the stream";
