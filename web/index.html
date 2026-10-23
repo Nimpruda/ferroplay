@@ -18,6 +18,7 @@
 <main class="min-[900px]:grid grid-cols-[2fr_3fr] gap-6 items-start">
   <div class="min-w-0 min-[900px]:sticky top-4 [&_.vp]:w-full [&_.vp]:aspect-video [&_.vp]:mb-3">
     <video id="main" playsinline></video>
+    <div id="now" class="mb-3 text-[13px]/snug [&>*]:truncate empty:hidden"></div>
     <fieldset id="plugins" class="flex flex-wrap gap-x-3.5 gap-y-0.5 m-0 px-3 pt-1.5 pb-2.5 border border-[#333] rounded-md text-[13px] [&_input]:m-[3px_3px_3px_4px]"><legend class="px-0.5">Plugins</legend></fieldset>
     <p class="my-4 [&_kbd]:bg-[#222] [&_kbd]:px-[5px] [&_kbd]:py-px [&_kbd]:rounded-[3px]"><small>Keys (click the player first): <kbd>space</kbd> play, <kbd>←</kbd><kbd>→</kbd> ±5 s, <kbd>j</kbd><kbd>l</kbd> ±10 s,
       <kbd>↑</kbd><kbd>↓</kbd> volume, <kbd>m</kbd> mute, <kbd>f</kbd> fullscreen, <kbd>0</kbd>–<kbd>9</kbd> jump, <kbd>&lt;</kbd><kbd>&gt;</kbd> speed.
@@ -136,8 +137,10 @@
   const searchText = e => [e.title, ...e.badges, CONTAINER[e.container], codecLabel(e)].join(' ').toLowerCase();
 
   // Everything that plays carries its resolved URL and its filter text; the one playing gets is-current.
+  const entryAt = new Map(); // resolved URL -> entry, for the now-playing card
   function playable(node, button, e) {
     Object.assign(node.dataset, { url: resolve(e.url), search: searchText(e) });
+    entryAt.set(node.dataset.url, e);
     node.classList.add('[&.is-current]:outline-2', '[&.is-current]:outline-[#4af]', '[&.is-current]:bg-[#1a2a3a]');
     button.addEventListener('click', () => openLink(node.dataset.url, e.plugins));
     return node;
@@ -145,6 +148,22 @@
   function markCurrent() {
     for (const node of catalog.querySelectorAll('[data-url]')) node.classList.toggle('is-current', node.dataset.url === resolve(link));
     catalog.querySelectorAll('.overflow-x-auto').forEach(showCurrent);
+    nowPlaying(entryAt.get(resolve(link)));
+  }
+  // The card under the player: the entry's title, badges, what it should do here and elsewhere, what it
+  // shows; for a link outside the catalog, the link's last two path parts.
+  const now = document.getElementById('now');
+  const [here, there] = /firefox/i.test(navigator.userAgent) ? ['firefox', 'chrome'] : ['chrome', 'firefox'];
+  const expected = (e, browser) => `${browser[0].toUpperCase()}${browser.slice(1)}: ${ends(e.expect[browser]) ? 'plays to the end' : e.expect[browser]}`;
+  const line = (text, more = '') => Object.assign(el('div', more, text), { title: text });
+  function nowPlaying(e) {
+    if (!e) return now.replaceChildren(line(new URL(link, location.href).pathname.split('/').slice(-2).join('/'), 'font-bold'));
+    const head = line(e.title + ' ', 'font-bold');
+    head.append(...e.badges.map(chip));
+    now.replaceChildren(head);
+    if (e.expect) now.append(line(expected(e, here)), line(expected(e, there), 'text-[11px] text-[#888]'));
+    const about = [e.feature ?? e.fault].filter(Boolean).join(' · ');
+    if (about) now.append(line(about, 'text-[#aaa]'));
   }
   // Brings the current entry into view by scrolling its box only (scrollIntoView would scroll the page too).
   function showCurrent(box) {
@@ -230,6 +249,7 @@
   await init(core ? 'player-core.wasm' : undefined);
   form.play.value = params.get('play') ?? '';
   build();
+  markCurrent();
   if (params.has('play')) p.play();
 </script>
 </body>

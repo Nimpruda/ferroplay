@@ -19,6 +19,7 @@ just up          # server + demo media on http://127.0.0.1:8080, rebuilt from th
 just up-live     # the same, plus a live stream at /hls/live/live.m3u8
 just docker-e2e  # the e2e tests in a container with Firefox and Chromium
 just down
+just shot /     # small desktop and mobile screenshots of a page, plus its text, in shots/ (screenshot.sh)
 docker build --target ts2mp4 -t ts2mp4 . && docker run --rm -i ts2mp4 < seg.ts > seg.mp4
 ```
 
@@ -29,8 +30,12 @@ Design notes, measurements and the traps we hit: [docs/learnings/](docs/learning
 
 ## The page
 
-`http://127.0.0.1:8080` is a playground: paste a link (`.mp4` or `.m3u8`) and tick plugins on
-and off; the player is rebuilt in place and keeps its position. Both live in the page URL, so a
+`http://127.0.0.1:8080` is a playground. The header has a form to paste a link (`.mp4` or `.m3u8`).
+On the left, sticky: the player; under it a now-playing card (the catalog entry's title and badges,
+what it should do in this browser, then in the other, and what it shows; for a link
+outside the catalog, the link); then the plugins, to tick on and off: the player is rebuilt in place
+and keeps its position. On the right, the test media catalog (below). Styles are Tailwind utilities
+from a pinned CDN script; without network the page is unstyled but works. The link and plugins live in the page URL, so a
 setup can be shared: `/?play=https://…/master.m3u8&plugins=keyboard,gaps,hls,speed`. `/?core=1` runs it on
 `player-core.wasm`, without the hls checkbox.
 
@@ -53,7 +58,11 @@ to `.cache/`, which the docker media service shares). Sources are plug-ins: a ne
 to the end, or fail with a message), and the plugins it needs, if
 any; `make-catalog.sh` says how to add an entry and documents the fields.
 
-The page lists the entries under the player, grouped by axis. A click on an entry that declares
+The page shows container and codec entries as a matrix, a row per codec combination and a column per
+delivery and container, so a gap is an empty cell; each entry has a Firefox and a Chrome glyph (hover
+for the outcome text). Faults, features and other links (another origin via the proxy, the live
+stream, blender.org) are in a list below. A filter box narrows both; the entry playing is marked.
+A click on an entry that declares
 plugins ticks exactly those (the ones the page lacks, like `hls` on `?core=1`, are dropped) and
 plays it in a new player; any other entry plays with the ticked plugins. It is for checks by hand:
 the e2e tests keep their own. Chrome plays HLS itself, so there an HLS entry checks Chrome's player;
