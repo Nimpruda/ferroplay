@@ -70,6 +70,10 @@ Axis `fault`: container entries' HLS through `/fault/` (a segment 404 then recov
 the first request, a flaky CDN, a slow network, a truncated segment, an HTML page as a segment). The
 server counts requests from its start: an `nth` fault shows once, until the server is restarted.
 
+Axis `feature`: HLS pathologies, one per way a stream goes wrong: a discontinuity with a timestamp
+reset, an encoder restart in a live stream (a playlist to copy by hand), a one-frame hole and a 2 s
+one, byte-range segments in MPEG-TS and fMP4 (with a byte-range init section), a segment listed twice.
+
 ## Crates
 
 | Crate | Role | Depends on |

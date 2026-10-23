@@ -324,5 +324,144 @@ title='HLS, an HTML page as a segment' fault='A segment is an HTML error page wi
 firefox=ends chrome=ends
 add
 
+# Pathologies: HLS streams that go wrong in one way each, encoded in 2 s segments, then edited: the
+# playlist, or the timestamps of the segments after a point. The comment above each entry says what it
+# should do once the engine handles it.
+
+# $1 seconds of the entry's source in H.264 + AAC as an HLS VOD in 2 s segments (a keyframe every 2 s).
+# The other arguments are more output options, the playlist last.
+hls_vod() {
+  seconds=$1
+  shift
+  encode "$seconds" -c:v libx264 -preset veryfast -pix_fmt yuv420p -g 50 -c:a aac -b:a 96k -ac 2 \
+    -f hls -hls_time 2 -hls_playlist_type vod "$@"
+}
+
+# A stream of $2 seconds encoded on its own in "$dir/$1": 000.ts on, and index.m3u8. Its timestamps
+# start at 1.4 s, as ffmpeg's always do. The other arguments are more output options.
+stream() {
+  folder=$dir/$1
+  shift
+  mkdir -p "$folder"
+  hls_vod "$@" -hls_segment_filename "$folder/%03d.ts" "$folder/index.m3u8"
+}
+
+# The segments (#EXTINF and URI) of the playlist in "$dir/$1", their URIs from "$dir" (from another
+# entry's folder too: ../<id>/<folder>).
+segments() {
+  sed -n "/^#EXTINF/{p;n;s|^|$1/|;p}" "$dir/$1/index.m3u8"
+}
+
+# A media playlist's first lines: 2 s segments from sequence number 0.
+head_tags() {
+  printf '#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:2\n#EXT-X-MEDIA-SEQUENCE:0\n'
+}
+
+# 12 s in "$dir" with a hole of $1 seconds 6 s in: the segments from 003.ts on are moved that much later
+# (ffmpeg adds 1.4 s unless told not to), and 002.ts is that much longer in the playlist, so it still says
+# where each is. No B-frames: they start each segment's video 0.08 s after its audio, and the holes of
+# the two tracks would add up in the buffer.
+hole() {
+  stream . 12 -bf 0
+  for segment in "$dir"/00[3-5].ts; do
+    ffmpeg -loglevel error -y -copyts -i "$segment" -c copy -muxdelay 0 -muxpreload 0 -output_ts_offset "$1" \
+      -f mpegts "$segment.moved"
+    mv "$segment.moved" "$segment"
+  done
+  length=$(LC_ALL=C awk "BEGIN { print 2 + $1 }")
+  sed -i "/^#EXTINF/{N;/\n002\.ts\$/s/:[0-9.]*,/:$length,/}" "$dir/index.m3u8"
+}
+
+# Two streams of 6 s encoded apart, in a/ and b/, the second in grey: its timestamps start over, as at
+# an ad or after an encoder restart. Both in one playlist, EXT-X-DISCONTINUITY between them. Our engine
+# rebases timestamps once, so the second is appended over the first and the duration shrinks to 6 s. Once
+# the engine reads the tag and rebases each section, it plays the 12 s through, the counter going back
+# to 0 at 0:06.
+start hls-ts-discontinuity
+title='HLS, MPEG-TS, discontinuity with a timestamp reset' url=$path/index.m3u8 delivery=hls container=mpegts
+codecs='h264 aac' axis=feature feature='VOD, 2 × 6 s encoded apart, EXT-X-DISCONTINUITY between them'
+source=synthetic firefox='fails: ends at 0:06 of 0:12, the grey half buffered over the first, no message'
+chrome=ends
+stream a 6
+stream b 6 -vf hue=s=0
+{
+  head_tags
+  echo '#EXT-X-PLAYLIST-TYPE:VOD'
+  segments a
+  echo '#EXT-X-DISCONTINUITY'
+  segments b
+  echo '#EXT-X-ENDLIST'
+} > "$dir/index.m3u8"
+add
+
+# An encoder restart in a live stream, which one static playlist cannot show: a reload has to list other
+# segments. With the streams above: live.m3u8 starts as before.m3u8, the first as a live window of 6 s
+# (no ENDLIST, so the player reloads it and waits at its end); after.m3u8 is the window after the
+# restart: MEDIA-SEQUENCE back to 0, the grey stream's segments under the sequence numbers already
+# played, then ENDLIST. Copied over live.m3u8 while it plays, the next reload sees the restart. Now our engine skips the new segments, as their numbers are
+# loaded already, and ends at 0:06; so does Chrome's own player. Once the engine sees the restart, it plays
+# the grey 6 s after the first and ends at 0:12.
+start hls-ts-encoder-restart
+title='HLS, MPEG-TS, live, encoder restart (copy a file by hand)' url=$path/live.m3u8 delivery=hls
+container=mpegts codecs='h264 aac' axis=feature source=synthetic
+feature="Live, 6 s, then MEDIA-SEQUENCE back to 0: while it plays, cp after.m3u8 live.m3u8 in $dir (cp before.m3u8 live.m3u8 to start over)"
+firefox='fails: ends at 0:06 once after.m3u8 is in, the new segments never fetched, no message' chrome=$firefox
+{ head_tags; segments ../hls-ts-discontinuity/a; } > "$dir/before.m3u8"
+{ head_tags; segments ../hls-ts-discontinuity/b; echo '#EXT-X-ENDLIST'; } > "$dir/after.m3u8"
+cp "$dir/before.m3u8" "$dir/live.m3u8"
+add
+
+# A hole of one frame (0.04 s) in the timestamps. Firefox plays over it, gaps plugin or not. Chrome's own
+# player waits at it; so does our engine in Chrome, gaps plugin and all: Chrome stops 0.07 s before the
+# end of the range, and the plugin measures the hole from there (over 0.1 s) rather than between ranges.
+start hls-ts-hole-small
+title='HLS, MPEG-TS, a one-frame hole, gaps plugin' url=$path/index.m3u8 delivery=hls container=mpegts
+codecs='h264 aac' axis=feature feature='VOD, 12 s, no media from 6 to 6.04 s' source=synthetic plugins='hls gaps'
+firefox=ends chrome='fails: waits at 0:06, no message'
+hole 0.04
+add
+
+# A hole of 2 s: missing media the gaps plugin leaves alone, so the player waits at it; so does
+# Chrome's own player, which now and then stops with an error instead. Once the gaps plugin nudges a stalled
+# playhead and gives up after its retries, Firefox stops there with a stall error instead of waiting.
+start hls-ts-hole-large
+title='HLS, MPEG-TS, a 2 s hole, gaps plugin' url=$path/index.m3u8 delivery=hls container=mpegts
+codecs='h264 aac' axis=feature feature='VOD, 14 s, no media from 6 to 8 s' source=synthetic plugins='hls gaps'
+firefox='fails: waits at 0:06, no message'
+chrome='fails: waits at 0:06, no message, or at times PipelineStatus::DEMUXER_ERROR_COULD_NOT_PARSE'
+hole 2
+add
+
+# Byte-range segments: one file, each segment a slice of it (EXT-X-BYTERANGE). Our engine ignores the
+# ranges: it fetches the whole file for each segment, six times, and appends it all at the same times, so
+# it still plays to the end. Once the engine fetches the slices with a Range header, each is fetched once.
+start hls-ts-byterange
+title='HLS, MPEG-TS, byte-range segments in one file' url=$path/index.m3u8 delivery=hls container=mpegts
+codecs='h264 aac' axis=feature feature='VOD, 12 s, EXT-X-BYTERANGE slices of video.ts' source=synthetic
+firefox=ends chrome=ends
+hls_vod 12 -hls_flags single_file -hls_segment_filename "$dir/video.ts" "$dir/index.m3u8"
+add
+
+# The same in fMP4, with the init section a slice of the file too (EXT-X-MAP BYTERANGE), which our engine
+# refuses before fetching anything. Once the engine fetches the slices, it plays the 12 s and ends.
+start hls-fmp4-byterange
+title='HLS, fMP4, byte-range segments and init section in one file' url=$path/index.m3u8 delivery=hls
+container=fmp4 codecs='h264 aac' axis=feature feature='VOD, 12 s, EXT-X-MAP and EXT-X-BYTERANGE slices of video.mp4'
+source=synthetic chrome=ends
+firefox='fails: HLS: giving up: …/video.mp4 is a byte range (EXT-X-MAP BYTERANGE), which this player cannot fetch yet'
+hls_vod 12 -hls_segment_type fmp4 -hls_flags single_file -hls_segment_filename "$dir/video.mp4" "$dir/index.m3u8"
+add
+
+# The same segment twice in a row in the playlist, without a discontinuity: its timestamps say 4 s both
+# times, the playlist 4 s then 6 s. Our engine appends it at its timestamps, over itself, and plays the
+# 12 s of media once; Chrome's own player fails as it appends the repeat. No task: the stream is broken.
+start hls-ts-segment-twice
+title='HLS, MPEG-TS, a segment listed twice' url=$path/index.m3u8 delivery=hls container=mpegts codecs='h264 aac'
+axis=feature feature='VOD, 12 s, 002.ts listed twice: 14 s by the playlist' source=synthetic firefox=ends
+chrome='fails: PipelineStatus::CHUNK_DEMUXER_ERROR_APPEND_FAILED: Parsed buffers not in DTS sequence'
+stream . 12
+sed -i '/^#EXTINF/{N;/\n002\.ts$/p}' "$dir/index.m3u8"
+add
+
 printf '[\n%s\n]\n' "$entries" > web/catalog/catalog.json
 ls web/catalog
