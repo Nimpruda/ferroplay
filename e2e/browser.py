@@ -78,7 +78,10 @@ class Chrome:
             if m.get('method') == 'Runtime.exceptionThrown':
                 self.logs.append(m['params']['exceptionDetails'].get('text', '')[:300])
             if m.get('method') == 'Runtime.consoleAPICalled' and m['params']['type'] in ('error', 'warning'):
-                self.logs.append(' '.join(str(a.get('value', a.get('description'))) for a in m['params']['args'])[:300])
+                text = ' '.join(str(a.get('value', a.get('description'))) for a in m['params']['args'])
+                # The demo page uses the Tailwind browser build on purpose, which warns about it on every load.
+                if not text.startswith('The browser build of Tailwind CSS'):
+                    self.logs.append(text[:300])
             if m.get('id') == self.id:
                 return m.get('result', m)
 

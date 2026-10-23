@@ -4,52 +4,29 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Rust video player</title>
 <link rel="stylesheet" href="player.css">
-<style>
-  body { margin: 0 auto; padding: 24px 16px; max-width: 1400px; font: 15px/1.5 system-ui, sans-serif; background: #111; color: #ddd; }
-  .vp { width: 100%; aspect-ratio: 16 / 9; margin: 12px 0; }
-  form { display: flex; gap: 8px; }
-  input[type=url] { flex: 1; min-width: 0; padding: 8px 10px; border: 1px solid #444; border-radius: 6px; background: #1b1b1b; color: inherit; font: inherit; }
-  button { padding: 8px 16px; border: 0; border-radius: 6px; background: #4af; color: #000; font: inherit; cursor: pointer; }
-  header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 24px; margin-bottom: 16px; }
-  header h1 { margin: 0; font-size: 1.4em; }
-  header form { flex: 1; min-width: min(100%, 320px); }
-  main > div { min-width: 0; }
-  @media (min-width: 900px) {
-    main { display: grid; grid-template-columns: 2fr 3fr; gap: 24px; align-items: start; }
-    .player { position: sticky; top: 16px; }
-  }
-  .player .vp { margin-top: 0; }
-  fieldset { border: 1px solid #333; border-radius: 6px; display: flex; flex-wrap: wrap; gap: 2px 14px; margin: 0; font-size: 13px; }
-  a { color: #8bf; }
-  kbd { background: #222; padding: 1px 5px; border-radius: 3px; }
-  .samples { display: flex; flex-wrap: wrap; gap: 8px; margin: 0; }
-  #catalog h2 { margin: 16px 0 0; }
-  .samples button, #catalog button { background: #2a2a2a; color: #ddd; border: 1px solid #444; }
-  #catalog h3 { margin: 16px 0 6px; font-size: inherit; text-transform: capitalize; }
-  #catalog ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
-  #catalog li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; }
-  #catalog button { padding: 4px 10px; }
-</style>
+<script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4.1.11"></script>
 
-<header>
-  <h1>Rust + WASM video player</h1>
-  <form id="open">
-    <input name="play" type="url" placeholder="Paste a video link (.mp4 or .m3u8)" required>
-    <button>Play</button>
+<body class="mx-auto max-w-[1400px] px-4 py-6 bg-[#111] font-[system-ui,sans-serif] text-[15px]/normal text-[#ddd] [&_small]:text-[83.33%]">
+<header class="flex flex-wrap items-center gap-x-6 gap-y-2 mb-4">
+  <h1 class="m-0 text-[1.4em] font-bold">Rust + WASM video player</h1>
+  <form id="open" class="flex flex-1 gap-2 min-w-[min(100%,320px)]">
+    <input name="play" type="url" placeholder="Paste a video link (.mp4 or .m3u8)" required
+      class="flex-1 min-w-0 px-2.5 py-2 border border-[#444] rounded-md bg-[#1b1b1b]">
+    <button class="px-4 py-2 rounded-md bg-[#4af] text-black cursor-pointer">Play</button>
   </form>
 </header>
-<main>
-  <div class="player">
+<main class="min-[900px]:grid grid-cols-[2fr_3fr] gap-6 items-start">
+  <div class="min-w-0 min-[900px]:sticky top-4 [&_.vp]:w-full [&_.vp]:aspect-video [&_.vp]:mb-3">
     <video id="main" playsinline></video>
-    <fieldset id="plugins"><legend>Plugins</legend></fieldset>
-    <p><small>Keys (click the player first): <kbd>space</kbd> play, <kbd>←</kbd><kbd>→</kbd> ±5 s, <kbd>j</kbd><kbd>l</kbd> ±10 s,
+    <fieldset id="plugins" class="flex flex-wrap gap-x-3.5 gap-y-0.5 m-0 px-3 pt-1.5 pb-2.5 border border-[#333] rounded-md text-[13px] [&_input]:m-[3px_3px_3px_4px]"><legend class="px-0.5">Plugins</legend></fieldset>
+    <p class="my-4 [&_kbd]:bg-[#222] [&_kbd]:px-[5px] [&_kbd]:py-px [&_kbd]:rounded-[3px]"><small>Keys (click the player first): <kbd>space</kbd> play, <kbd>←</kbd><kbd>→</kbd> ±5 s, <kbd>j</kbd><kbd>l</kbd> ±10 s,
       <kbd>↑</kbd><kbd>↓</kbd> volume, <kbd>m</kbd> mute, <kbd>f</kbd> fullscreen, <kbd>0</kbd>–<kbd>9</kbd> jump, <kbd>&lt;</kbd><kbd>&gt;</kbd> speed.
       The link and plugins live in the page URL, so a setup can be shared.
-      Default video: Sintel trailer © Blender Foundation, <a href="https://www.blender.org">blender.org</a>, CC-BY 3.0.</small></p>
+      Default video: Sintel trailer © Blender Foundation, <a href="https://www.blender.org" class="text-[#8bf] underline">blender.org</a>, CC-BY 3.0.</small></p>
   </div>
-  <div>
-    <div class="samples" id="samples" aria-label="Test media"></div>
-    <section id="catalog"><h2>Test media catalog</h2></section>
+  <div class="min-w-0">
+    <div class="flex flex-wrap gap-2" id="samples" aria-label="Test media"></div>
+    <section id="catalog"><h2 class="mt-4 text-[1.5em] font-bold">Test media catalog</h2></section>
   </div>
 </main>
 
@@ -80,6 +57,10 @@
   const form = document.getElementById('open');
   const box = document.getElementById('plugins');
   let p, resume;
+  // Dark grey button for samples and catalog entries (Tailwind classes; plain buttons without the CDN).
+  const greyButton = (label, pad = 'px-4 py-2') => Object.assign(document.createElement('button'), {
+    type: 'button', textContent: label, className: `${pad} rounded-md border border-[#444] bg-[#2a2a2a] cursor-pointer`,
+  });
 
   // Other sites' playlists go through the server's proxy, so they play without CORS headers.
   const source = url => {
@@ -145,9 +126,7 @@
   ];
   const samples = document.getElementById('samples');
   for (const [label, url] of SAMPLES) {
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.textContent = label;
+    const button = greyButton(label);
     button.addEventListener('click', () => openLink(url));
     samples.append(button);
   }
@@ -158,16 +137,16 @@
   const catalog = document.getElementById('catalog');
   fetch('catalog/catalog.json').then(r => r.ok ? r.json() : Promise.reject(r.status)).then(entries => {
     for (const [axis, group] of Object.entries(Object.groupBy(entries, e => e.axis))) {
-      const list = document.createElement('ul');
-      catalog.append(Object.assign(document.createElement('h3'), { textContent: axis }), list);
+      const list = Object.assign(document.createElement('ul'), { className: 'grid gap-1.5' });
+      catalog.append(Object.assign(document.createElement('h3'), { textContent: axis, className: 'mt-4 mb-1.5 font-bold capitalize' }), list);
       for (const e of group) {
-        const button = Object.assign(document.createElement('button'), { type: 'button', textContent: e.title });
+        const button = greyButton(e.title, 'px-2.5 py-1');
         button.addEventListener('click', () => { openLink(`${here}/${e.url}`, e.plugins); video.scrollIntoView(); });
         const expect = Object.entries(e.expect).map(([browser, outcome]) =>
           `${browser[0].toUpperCase()}${browser.slice(1)}: ${outcome === 'ends' ? 'plays to the end' : outcome}`);
         const about = [e.feature ?? e.fault, `${e.delivery}, ${e.container}, ${e.codecs.join(' + ')}, ${e.source}`,
           ...expect].filter(Boolean).join(' · ');
-        const item = document.createElement('li');
+        const item = Object.assign(document.createElement('li'), { className: 'flex flex-wrap items-baseline gap-x-2 gap-y-0.5' });
         item.append(button, Object.assign(document.createElement('small'), { textContent: about }));
         list.append(item);
       }
@@ -179,4 +158,5 @@
   build();
   if (params.has('play')) p.play();
 </script>
+</body>
 </html>
