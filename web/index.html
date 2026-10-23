@@ -26,7 +26,7 @@
       Default video: Sintel trailer © Blender Foundation, <a href="https://www.blender.org" class="text-[#8bf] underline">blender.org</a>, CC-BY 3.0.</small></p>
   </div>
   <div class="min-w-0">
-    <section id="catalog" class="text-[13px]"><h2 class="mt-0 mb-2 text-[1.5em] font-bold">Test media catalog</h2>
+    <section id="catalog" class="text-[13px] [&_.is-current]:outline-2 [&_.is-current]:outline-[#4af] [&_.is-current]:bg-[#1a2a3a]"><h2 class="mt-0 mb-2 text-[1.5em] font-bold">Test media catalog</h2>
       <input id="filter" type="search" placeholder="Filter…" aria-label="Filter the catalog"
         class="w-full mb-3 px-2.5 py-1.5 border border-[#444] rounded-md bg-[#1b1b1b]">
     </section>
@@ -61,12 +61,12 @@
   const box = document.getElementById('plugins');
   let p, resume;
   const el = (tag, className = '', text = '') => Object.assign(document.createElement(tag), { className, textContent: text });
-  // Dark grey button for catalog entries (Tailwind classes; plain buttons without the CDN).
-  const greyButton = (label, more = '') => Object.assign(el('button', `px-1.5 py-0.5 rounded border border-[#444] bg-[#2a2a2a] cursor-pointer ${more}`, label), { type: 'button' });
+  const BUTTON = 'px-1.5 py-0.5 rounded border border-[#444] bg-[#2a2a2a] cursor-pointer'; // dark grey, for catalog entries
+  const resolve = url => new URL(url, location.href);
 
   // Other sites' playlists go through the server's proxy, so they play without CORS headers.
   const source = url => {
-    const u = new URL(url, location.href);
+    const u = resolve(url);
     return u.origin !== location.origin && /\.m3u8$/i.test(u.pathname) ? `/proxy/${u.href}` : u.href;
   };
   const remember = () => history.replaceState(null, '', '?' + new URLSearchParams({ play: link, plugins: chosen, ...core && { core: 1 } }));
@@ -123,14 +123,14 @@
   const catalog = document.getElementById('catalog');
   const filter = document.getElementById('filter');
   const CODEC = { h264: 'H.264', hevc: 'HEVC', vp9: 'VP9', av1: 'AV1', aac: 'AAC', opus: 'Opus', ac3: 'AC-3', eac3: 'E-AC-3', mp3: 'MP3', flac: 'FLAC' };
-  const CONTAINER = { mpegts: 'MPEG-TS', fmp4: 'fMP4', mp4: 'MP4', webm: 'WebM', mp3: 'packed MP3' };
+  const CONTAINER = { mpegts: 'MPEG-TS', fmp4: 'fMP4', mp4: 'MP4', webm: 'WebM', mp3: 'packed MP3' }; // in column order
+  const BROWSERS = ['firefox', 'chrome'];
   const codecLabel = e => e.codecs.map(c => CODEC[c] ?? c).join(' + ');
   const columnLabel = e => e.delivery === 'hls' ? `HLS · ${CONTAINER[e.container]}` : `${CONTAINER[e.container]} file`;
   // The title without delivery, container, trailing codecs and asides: "HLS, fMP4, audio only (AAC)" -> "audio only".
   const shortLabel = e => e.title.split(', ')
     .filter((part, i, parts) => !['HLS', ...Object.values(CONTAINER)].includes(part) && !(i === parts.length - 1 && part === codecLabel(e)))
     .join(', ').replace(/ \(.*\)| with| plugin/g, '') || 'plain';
-  const resolve = url => new URL(url, location.href).href;
   const ends = outcome => outcome === 'ends';
   const glyph = outcome => el('span', ends(outcome) ? 'text-[#6c6]' : 'text-[#f66]', ends(outcome) ? '✓' : '✗');
   const chip = text => el('span', 'inline-block mr-1 px-1.5 rounded-full bg-[#333] text-[11px]', text);
@@ -138,17 +138,18 @@
 
   // Everything that plays carries its resolved URL and its filter text; the one playing gets is-current.
   const entryAt = new Map(); // resolved URL -> entry, for the now-playing card
+  const boxes = []; // the matrix's and the list's scroll boxes
   function playable(node, button, e) {
-    Object.assign(node.dataset, { url: resolve(e.url), search: searchText(e) });
+    Object.assign(node.dataset, { url: resolve(e.url).href, search: searchText(e) });
     entryAt.set(node.dataset.url, e);
-    node.classList.add('[&.is-current]:outline-2', '[&.is-current]:outline-[#4af]', '[&.is-current]:bg-[#1a2a3a]');
     button.addEventListener('click', () => openLink(node.dataset.url, e.plugins));
     return node;
   }
   function markCurrent() {
-    for (const node of catalog.querySelectorAll('[data-url]')) node.classList.toggle('is-current', node.dataset.url === resolve(link));
-    catalog.querySelectorAll('.overflow-x-auto').forEach(showCurrent);
-    nowPlaying(entryAt.get(resolve(link)));
+    const current = resolve(link).href;
+    for (const node of catalog.querySelectorAll('[data-url]')) node.classList.toggle('is-current', node.dataset.url === current);
+    boxes.forEach(showCurrent);
+    nowPlaying(entryAt.get(current));
   }
   // The card under the player: the entry's title, badges, what it should do here and elsewhere, what it
   // shows; for a link outside the catalog, the link's last two path parts.
@@ -157,7 +158,7 @@
   const expected = (e, browser) => `${browser[0].toUpperCase()}${browser.slice(1)}: ${ends(e.expect[browser]) ? 'plays to the end' : e.expect[browser]}`;
   const line = (text, more = '') => Object.assign(el('div', more, text), { title: text });
   function nowPlaying(e) {
-    if (!e) return now.replaceChildren(line(new URL(link, location.href).pathname.split('/').slice(-2).join('/'), 'font-bold'));
+    if (!e) return now.replaceChildren(line(resolve(link).pathname.split('/').slice(-2).join('/'), 'font-bold'));
     const head = line(e.title + ' ', 'font-bold');
     head.append(...e.badges.map(chip));
     now.replaceChildren(head);
@@ -177,11 +178,12 @@
     for (const node of catalog.querySelectorAll('[data-search]')) node.hidden = !node.dataset.search.includes(query);
   });
 
-  const BORDERS = '[&_th]:p-1 [&_td]:p-1 [&_th]:font-normal [&_th]:text-[#aaa] [&_th]:whitespace-nowrap';
+  const CELLS = '[&_:is(th,td)]:p-1 [&_th]:font-normal [&_th]:text-[#aaa] [&_th]:whitespace-nowrap';
+  const containerOrder = Object.keys(CONTAINER);
   function matrix(entries) {
-    const rows = [...new Set(entries.map(codecLabel))], cols = [...new Set(entries.map(columnLabel))]
-      .sort((a, b) => a.includes('packed') - b.includes('packed') || b.startsWith('HLS') - a.startsWith('HLS')); // HLS first, packed audio last
-    const table = el('table', `border-collapse ${BORDERS} [&_th]:border [&_td]:border [&_th]:border-[#333] [&_td]:border-[#333] [&_td]:align-top`);
+    const rows = [...new Set(entries.map(codecLabel))];
+    const cols = [...new Set([...entries].sort((a, b) => containerOrder.indexOf(a.container) - containerOrder.indexOf(b.container)).map(columnLabel))];
+    const table = el('table', `border-collapse ${CELLS} [&_:is(th,td)]:border [&_:is(th,td)]:border-[#333] [&_td]:align-top`);
     table.createTHead().insertRow().append(el('th'), ...cols.map(col => el('th', '', col)));
     for (const row of rows) {
       const tr = table.insertRow();
@@ -191,9 +193,9 @@
         const inCell = entries.filter(e => codecLabel(e) === row && columnLabel(e) === col);
         if (!inCell.length) cell.append(el('span', 'block text-center text-[#555]', '–'));
         for (const e of inCell) {
-          const button = greyButton('', 'flex w-full gap-1 mb-0.5 whitespace-nowrap');
-          button.title = [e.title, e.feature, ...Object.entries(e.expect).map(([browser, outcome]) => `${browser}: ${outcome}`)].join('\n');
-          button.append(el('span', 'flex-1 text-left whitespace-normal', shortLabel(e) + ' '), glyph(e.expect.firefox), glyph(e.expect.chrome));
+          const button = el('button', `${BUTTON} flex w-full gap-1 mb-0.5 whitespace-nowrap`);
+          button.title = [e.title, e.feature, ...BROWSERS.map(browser => `${browser}: ${e.expect[browser]}`)].join('\n');
+          button.append(el('span', 'flex-1 text-left whitespace-normal', shortLabel(e) + ' '), ...BROWSERS.map(browser => glyph(e.expect[browser])));
           cell.append(playable(button, button, e));
         }
       }
@@ -203,24 +205,26 @@
   const scrollBox = table => {
     const box = el('div', 'overflow-x-auto mb-4');
     box.append(table);
+    boxes.push(box);
     // Again once the table has its final size (the Tailwind CDN styles it after it is added).
     new ResizeObserver(() => showCurrent(box)).observe(table);
     return box;
   };
 
   function list(entries) {
-    const table = el('table', `w-full border-collapse ${BORDERS} [&_th]:text-left [&_tr]:border-b [&_tr]:border-[#333]`);
+    const table = el('table', `w-full border-collapse ${CELLS} [&_th]:text-left [&_tr]:border-b [&_tr]:border-[#333]`);
     table.createTHead().insertRow().append(...['', 'What it is', 'Firefox', 'Chrome'].map(h => el('th', '', h)));
     let axis;
     for (const e of entries) {
       if (e.axis !== axis) table.insertRow().append(Object.assign(el('th', 'pt-3 capitalize !text-[#ddd]', axis = e.axis), { colSpan: 5 }));
       const tr = table.insertRow();
-      const button = greyButton(e.title, 'min-w-[12em] text-left');
+      const button = el('button', `${BUTTON} min-w-[12em] text-left`, e.title);
       button.title = e.feature ?? e.fault ?? '';
       tr.insertCell().append(button);
       const badges = el('td', 'min-w-[11em]');
       badges.append(...e.badges.map(chip));
-      tr.append(badges, ...[e.expect?.firefox, e.expect?.chrome].map(outcome => {
+      tr.append(badges, ...BROWSERS.map(browser => {
+        const outcome = e.expect?.[browser];
         const td = el('td');
         if (outcome) td.append(ends(outcome) ? glyph(outcome) : Object.assign(el('span', 'block truncate max-w-[12em]', outcome), { title: outcome }));
         return td;
