@@ -1,4 +1,4 @@
-//! MPEG-TS demuxer for the usual HLS payload: H.264 video and AAC (ADTS) audio.
+//! MPEG-TS demuxer for the usual HLS payload: H.264 video and AAC (ADTS) audio; other audio is named, not read.
 
 use crate::codec;
 use alloc::{string::String, vec::Vec};
@@ -7,6 +7,9 @@ use alloc::{string::String, vec::Vec};
 pub struct Media {
     pub video: Option<Video>,
     pub audio: Option<Audio>,
+    /// The names of the audio codecs the PMT lists that this player cannot play (AC-3, E-AC-3, MPEG audio): those
+    /// tracks are left out.
+    pub skipped: Vec<&'static str>,
 }
 
 pub struct Video {
@@ -72,11 +75,11 @@ pub fn demux(ts: &[u8]) -> Media {
 /// they go back to 0 every 26.5 h, and a live stream that runs longer goes on from there. Within the segment,
 /// each timestamp is unwrapped against the one before it, so samples keep their order across a wrap.
 pub fn demux_near(ts: &[u8], near: Option<i64>) -> Media {
-    let (video_pes, audio_pes) = split(ts);
+    let (video_pes, audio_pes, skipped) = split(ts);
     let video = video(&video_pes, near);
     // Against the video rather than `near`: a segment's two tracks are on the same side of a wrap.
     let near = video.as_ref().and_then(|v| v.samples.first()).map(|s| s.dts).or(near);
-    Media { video, audio: audio(&audio_pes, near) }
+    Media { video, audio: audio(&audio_pes, near), skipped }
 }
 
 /// PTS and DTS are 33 bits at 90 kHz: they wrap every 2^33 ticks.
@@ -87,9 +90,9 @@ fn unwrap(t: i64, near: Option<i64>) -> i64 {
     near.map_or(t, |near| t + (near - t + WRAP / 2).div_euclid(WRAP) * WRAP)
 }
 
-/// TS packets -> the PES packets of the first H.264 and the first AAC stream.
-fn split(ts: &[u8]) -> (Vec<Vec<u8>>, Vec<Vec<u8>>) {
-    let (mut pmt, mut pids) = (None, (None, None));
+/// TS packets -> the PES packets of the first H.264 and the first AAC stream, and the audio codecs left out.
+fn split(ts: &[u8]) -> (Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<&'static str>) {
+    let (mut pmt, mut pids) = (None, Streams::default());
     let (mut video, mut audio) = (Vec::new(), Vec::new());
     for p in ts.as_chunks::<188>().0.iter().filter(|p| p[0] == 0x47) {
         let pid = u16::from_be_bytes([p[1] & 0x1f, p[2]]);
@@ -101,8 +104,8 @@ fn split(ts: &[u8]) -> (Vec<Vec<u8>>, Vec<Vec<u8>>) {
         } else if Some(pid) == pmt && start {
             pids = streams(payload).unwrap_or(pids);
         } else if let Some(list) = match pid {
-            _ if Some(pid) == pids.0 => Some(&mut video),
-            _ if Some(pid) == pids.1 => Some(&mut audio),
+            _ if Some(pid) == pids.video => Some(&mut video),
+            _ if Some(pid) == pids.audio => Some(&mut audio),
             _ => None,
         } {
             if start {
@@ -113,7 +116,7 @@ fn split(ts: &[u8]) -> (Vec<Vec<u8>>, Vec<Vec<u8>>) {
             }
         }
     }
-    (video, audio)
+    (video, audio, pids.skipped)
 }
 
 /// A PSI section (PAT or PMT) from table_id up to, not including, its CRC.
@@ -129,21 +132,54 @@ fn pat(payload: &[u8]) -> Option<u16> {
     programs.iter().find(|e| e[..2] != [0, 0]).map(|e| u16::from_be_bytes([e[2] & 0x1f, e[3]]))
 }
 
-/// PMT -> PIDs of the H.264 (type 0x1b) and AAC (type 0x0f) streams.
-fn streams(payload: &[u8]) -> Option<(Option<u16>, Option<u16>)> {
+/// What a PMT lists: the PIDs of the H.264 and AAC streams, and the audio codecs this player cannot play.
+#[derive(Default)]
+struct Streams {
+    video: Option<u16>,
+    audio: Option<u16>,
+    skipped: Vec<&'static str>,
+}
+
+/// PMT -> its streams: H.264 is type 0x1b, AAC 0x0f.
+fn streams(payload: &[u8]) -> Option<Streams> {
     let s = section(payload)?;
     let mut i = 12 + (usize::from(*s.get(10)? & 0x0f) << 8 | usize::from(*s.get(11)?));
-    let (mut video, mut audio) = (None, None);
+    let mut found = Streams::default();
     while let Some(e) = s.get(i..i + 5) {
         let pid = Some(u16::from_be_bytes([e[1] & 0x1f, e[2]]));
+        let end = i + 5 + (usize::from(e[3] & 0x0f) << 8 | usize::from(e[4]));
         match e[0] {
-            0x1b => video = video.or(pid),
-            0x0f => audio = audio.or(pid),
-            _ => {}
+            0x1b => found.video = found.video.or(pid),
+            0x0f => found.audio = found.audio.or(pid),
+            kind => {
+                let name = match kind {
+                    0x03 | 0x04 => Some("MPEG audio"),
+                    0x81 => Some("AC-3"),
+                    0x87 => Some("E-AC-3"),
+                    0x06 => s.get(i + 5..end).and_then(dolby),
+                    _ => None,
+                };
+                if let Some(name) = name.filter(|n| !found.skipped.contains(n)) {
+                    found.skipped.push(name);
+                }
+            }
         }
-        i += 5 + (usize::from(e[3] & 0x0f) << 8 | usize::from(e[4]));
+        i = end;
     }
-    Some((video, audio))
+    Some(found)
+}
+
+/// The descriptors of a PES private data stream (type 0x06) -> "AC-3" or "E-AC-3" when they say it is one.
+fn dolby(mut descriptors: &[u8]) -> Option<&'static str> {
+    while let [tag, len, rest @ ..] = descriptors {
+        let (body, next) = rest.split_at_checked(usize::from(*len))?;
+        match (tag, body) {
+            (0x6a, _) | (0x05, b"AC-3") => return Some("AC-3"),
+            (0x7a, _) | (0x05, b"EAC3") => return Some("E-AC-3"),
+            _ => descriptors = next,
+        }
+    }
+    None
 }
 
 /// (pts, dts) of a PES packet.

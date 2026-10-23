@@ -210,11 +210,11 @@ chrome="fails: DECODER_ERROR_NOT_SUPPORTED (Chrome's HLS, no HEVC decoder), show
 hls_fmp4 ffmpeg -loglevel error -y -i "$hevc" -c copy
 add
 
-# Audio in MPEG-TS that the engine does not take: it drops the track and plays the picture.
+# Audio in MPEG-TS that the engine does not take: it drops the track, says so once and plays the picture.
 start hls-ts-ac3
 title='HLS, MPEG-TS, H.264 + AC-3' url=$path/index.m3u8 delivery=hls container=mpegts codecs='h264 ac3'
 axis=codec feature='AC-3 audio' source=synthetic
-firefox='ends, picture only: the AC-3 track is dropped without a message'
+firefox='ends, picture only: a warning names the AC-3 track'
 chrome="ends, picture only: Chrome's HLS has no AC-3 decoder"
 hls_ts remux -t 10 -c:a ac3 -b:a 192k -ac 2
 add
@@ -222,7 +222,7 @@ add
 start hls-ts-eac3
 title='HLS, MPEG-TS, H.264 + E-AC-3' url=$path/index.m3u8 delivery=hls container=mpegts codecs='h264 eac3'
 axis=codec feature='E-AC-3 audio' source=synthetic
-firefox='ends, picture only: the E-AC-3 track is dropped without a message'
+firefox='ends, picture only: a warning names the E-AC-3 track'
 chrome="ends, picture only: Chrome's HLS has no E-AC-3 decoder"
 hls_ts remux -t 10 -c:a eac3 -b:a 192k -ac 2
 add
@@ -230,7 +230,7 @@ add
 start hls-ts-mp3
 title='HLS, MPEG-TS, H.264 + MP3' url=$path/index.m3u8 delivery=hls container=mpegts codecs='h264 mp3'
 axis=codec feature='MP3 audio' source=synthetic
-firefox='ends, picture only: the MP3 track is dropped without a message' chrome=ends
+firefox='ends, picture only: a warning names the MPEG audio (MP3) track' chrome=ends
 hls_ts remux -t 10 -c:a libmp3lame -b:a 128k -ac 2
 add
 

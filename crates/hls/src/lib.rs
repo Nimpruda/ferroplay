@@ -126,6 +126,8 @@ pub struct Hls {
     /// segment is built only when it changes. The two are never equal: an init section has `ftyp` at bytes 4 to 8,
     /// where a setup has an SPS, whose first byte is never `f`, or ends.
     init: Vec<u8>,
+    /// The audio codecs of MPEG-TS segments this player cannot play, said once each for the stream.
+    unplayable: Vec<&'static str>,
     /// The `EXT-X-MAP` of that init segment and its tracks, when it came from the stream (fMP4).
     map: Option<(Map, Vec<Track>)>,
 }
@@ -297,7 +299,15 @@ impl Hls {
         // is. Not nearest the segment before: a seek may land many hours away.
         let near = self.offset.map(|offset| ((start - offset) * 90_000.0) as i64);
         let media = ts2mp4::demux_near(data, near);
-        let pts = media.start().ok_or("no MPEG-TS media this player can play")?;
+        let Some(pts) = media.start() else {
+            return Err(media.skipped.first().map_or("no MPEG-TS media this player can play".into(), |name| unplayable(name)));
+        };
+        for &name in &media.skipped {
+            if !self.unplayable.contains(&name) {
+                self.unplayable.push(name);
+                out.push(Cmd::Warn([&unplayable(name), ": the picture plays without sound"].concat()));
+            }
+        }
         let offset = *self.offset.get_or_insert(start - pts as f64 / 90_000.0);
         // The fragment number only has to grow; it wraps rather than overflow on huge sequence numbers. Made before
         // the init segment, so that one that cannot go on the timeline changes nothing.
@@ -517,4 +527,9 @@ impl Plugin for Hls {
         }
         out.extend(cmds.into_iter().map(Intent::Cmd));
     }
+}
+
+/// The message for a codec this player cannot play, worded as for an fMP4 init section.
+fn unplayable(name: &str) -> String {
+    [name, " is a codec this player cannot play"].concat()
 }

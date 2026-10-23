@@ -64,3 +64,42 @@ fn ignores_garbage() {
     assert!(ts2mp4::convert(b"<html>not a video</html>").is_none());
     assert!(ts2mp4::convert(&[0x47; 188 * 3]).is_none());
 }
+
+/// `SAMPLE` with a stream entry of its PMT (type, PID, ES info) replaced by another, the section length to match.
+fn sample_with(entry: &[u8], with: &[u8]) -> Vec<u8> {
+    let pmt = [0x00, 0x02, 0xb0, 0x17]; // pointer field, table_id 2, section length 0x17
+    SAMPLE
+        .chunks(188)
+        .flat_map(|p| {
+            let Some(at) = p.windows(4).position(|w| w == pmt) else { return p.to_vec() };
+            let i = p.windows(entry.len()).position(|w| w == entry).unwrap();
+            let mut p = [&p[..i], with, &p[i + entry.len()..]].concat();
+            p[at + 3] = (0x17 + with.len() - entry.len()) as u8;
+            p.resize(188, 0xff);
+            p
+        })
+        .collect()
+}
+
+const AAC: &[u8] = &[0x0f, 0xe1, 0x01, 0xf0, 0x00];
+
+#[test]
+fn names_the_audio_it_cannot_play_and_keeps_the_video() {
+    for (with, name) in [
+        (&[0x81, 0xe1, 0x01, 0xf0, 0x00][..], "AC-3"),
+        (&[0x06, 0xe1, 0x01, 0xf0, 0x03, 0x6a, 0x01, 0x00], "AC-3"),
+        (&[0x06, 0xe1, 0x01, 0xf0, 0x06, 0x05, 0x04, b'A', b'C', b'-', b'3'], "AC-3"),
+        (&[0x87, 0xe1, 0x01, 0xf0, 0x00], "E-AC-3"),
+        (&[0x06, 0xe1, 0x01, 0xf0, 0x03, 0x7a, 0x01, 0x00], "E-AC-3"),
+        (&[0x03, 0xe1, 0x01, 0xf0, 0x00], "MPEG audio"),
+        (&[0x04, 0xe1, 0x01, 0xf0, 0x00], "MPEG audio"),
+    ] {
+        let media = ts2mp4::demux(&sample_with(AAC, with));
+        assert_eq!(media.skipped, [name], "{with:x?}");
+        assert!(media.audio.is_none() && media.video.is_some(), "{name}");
+        assert_eq!(media.mime(), "video/mp4; codecs=\"avc1.64000b\"");
+    }
+    assert!(ts2mp4::demux(SAMPLE).skipped.is_empty());
+    let private = sample_with(AAC, &[0x06, 0xe1, 0x01, 0xf0, 0x00]);
+    assert!(ts2mp4::demux(&private).skipped.is_empty(), "private data that says nothing of what it is");
+}

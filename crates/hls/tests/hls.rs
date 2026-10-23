@@ -812,3 +812,58 @@ fn how_long_a_two_hour_vod_takes() {
     }
     println!("the playlist: {:?}; 70 segments: {:?}; 1000 time events: {:?}", best[0], best[1], best[2]);
 }
+
+/// `SAMPLE` with stream entries of its PMT (type, PID, ES info) replaced by others, the section length to match.
+fn sample_with(entries: &[(&[u8], &[u8])]) -> Vec<u8> {
+    let pmt = [0x00, 0x02, 0xb0, 0x17]; // pointer field, table_id 2, section length 0x17
+    SAMPLE
+        .chunks(188)
+        .flat_map(|p| {
+            let Some(at) = p.windows(4).position(|w| w == pmt) else { return p.to_vec() };
+            let mut p = p.to_vec();
+            for (entry, with) in entries {
+                let i = p.windows(entry.len()).position(|w| w == *entry).unwrap();
+                p.splice(i..i + entry.len(), with.iter().copied());
+                p[at + 3] += (with.len() - entry.len()) as u8;
+            }
+            p.resize(188, 0xff);
+            p
+        })
+        .collect()
+}
+
+const AAC: &[u8] = &[0x0f, 0xe1, 0x01, 0xf0, 0x00];
+const H264: &[u8] = &[0x1b, 0xe1, 0x00, 0xf0, 0x00];
+/// The three audio codecs MPEG-TS carries that this player cannot play, as PMT entries for `AAC`'s PID.
+const UNPLAYABLE: [(&[u8], &str); 3] = [
+    (&[0x06, 0xe1, 0x01, 0xf0, 0x03, 0x6a, 0x01, 0x00], "AC-3"),
+    (&[0x87, 0xe1, 0x01, 0xf0, 0x00], "E-AC-3"),
+    (&[0x03, 0xe1, 0x01, 0xf0, 0x00], "MPEG audio"),
+];
+
+#[test]
+fn audio_it_cannot_play_is_said_once_and_the_picture_plays() {
+    for (with, name) in UNPLAYABLE {
+        let mut p = playing("https://cdn.test/movie.m3u8");
+        p.dispatch(loaded(window("s", 0, 3, 2.0).as_bytes()));
+        let segment = sample_with(&[(AAC, with)]);
+        let cmds: Vec<Cmd> = (0..3).flat_map(|_| p.dispatch(loaded(&segment))).collect();
+        let warned = [name, " is a codec this player cannot play: the picture plays without sound"].concat();
+        let warns: Vec<&Cmd> = cmds.iter().filter(|c| matches!(c, Cmd::Warn(_))).collect();
+        assert_eq!(warns, [&Cmd::Warn(warned)], "{name}: once for the stream, not once per segment");
+        assert_eq!(cmds.iter().filter(|c| matches!(c, Cmd::Append(_))).count(), 4, "{name}: the init segment, then every segment");
+        assert!(cmds.iter().any(|c| matches!(c, Cmd::Codec(m) if m == "video/mp4; codecs=\"avc1.64000b\"")), "{cmds:?}");
+    }
+}
+
+#[test]
+fn a_segment_with_nothing_it_can_play_names_the_codec_it_saw() {
+    for (with, name) in UNPLAYABLE {
+        let mut p = playing("https://cdn.test/movie.m3u8");
+        p.dispatch(loaded(window("s", 0, 3, 2.0).as_bytes()));
+        let no_video = &[0x24, 0xe1, 0x00, 0xf0, 0x00][..]; // HEVC: not read from MPEG-TS
+        let skipped = ["segment https://cdn.test/s0.ts skipped: ", name, " is a codec this player cannot play"].concat();
+        let segment = sample_with(&[(AAC, with), (H264, no_video)]);
+        assert_eq!(p.dispatch(loaded(&segment)), [Cmd::Warn(skipped), fetch("https://cdn.test/s1.ts")], "{name}");
+    }
+}
