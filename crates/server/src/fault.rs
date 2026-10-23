@@ -163,7 +163,12 @@ async fn answer(faults: &Faults, spec: &str, uri: &Uri) -> Result<Response, (Sta
     if !served.status().is_success() {
         return Ok(served.map(Body::new));
     }
-    let mut kind = crate::hls_type(path).map(HeaderValue::from_static).or_else(|| served.headers().get(CONTENT_TYPE).cloned());
+    // The content type: `type=` wins, then an HTML body's, then the HLS type the server gives elsewhere, then the file's.
+    let kind = spec
+        .kind
+        .or_else(|| spec.html.then(|| HeaderValue::from_static("text/html")))
+        .or_else(|| crate::hls_type(path).map(HeaderValue::from_static))
+        .or_else(|| served.headers().get(CONTENT_TYPE).cloned());
     let mut body = axum::body::to_bytes(Body::new(served.into_body()), usize::MAX)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
@@ -172,10 +177,7 @@ async fn answer(faults: &Faults, spec: &str, uri: &Uri) -> Result<Response, (Sta
         body = hls::playlist::rewrite(&String::from_utf8_lossy(&body), &format!("/{path}"), prefix).into();
     }
     if spec.html {
-        (body, kind) = (Bytes::from_static(HTML.as_bytes()), Some(HeaderValue::from_static("text/html")));
-    }
-    if let Some(other) = spec.kind {
-        kind = Some(other);
+        body = Bytes::from_static(HTML.as_bytes());
     }
 
     let length = body.len();

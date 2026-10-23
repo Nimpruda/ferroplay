@@ -5,10 +5,10 @@
 # the ffmpeg output options and runs ffmpeg on its own inputs. synthetic: a test pattern with a tone (no
 # network); clip: a cut of the Sintel trailer, downloaded once to .cache/, where the content matters.
 # To add a source: one new file in catalog/sources/, nothing else.
-# To add an entry: `start <id>`, set its fields (see `add`), make its media in "$dir" with `encode` (or
-# `remux`, when only the container differs from media made already; `hls_ts` or `hls_fmp4` in front of
-# either makes an HLS VOD), `add`. Another entry for the same
-# media: change the id and the fields that differ, `add` again.
+# To add an entry: `start <id>`, set its fields (see `add`), make its media in "$dir" with `h264_aac` or
+# `encode` (or `remux`, when only the container differs from media made already; `hls_ts` or `hls_fmp4`
+# in front of any makes an HLS VOD), `add`. Another entry for the same media: change the id and the
+# fields that differ, `add` again.
 set -e
 cd "$(dirname "$0")"
 for file in catalog/sources/*.sh; do
@@ -32,10 +32,15 @@ array() {
   printf '[%s]' "$list"
 }
 
-# Starts entry $1: its folder ($dir; $path from web/, for urls) and its fields, all empty.
-start() {
+# Entry $1's names ($dir; $path from web/, for urls) and its fields, all empty.
+fields() {
   id=$1 path=catalog/$1 dir=web/catalog/$1
   title='' url='' delivery='' container='' codecs='' axis='' feature='' fault='' source='' plugins='' firefox='' chrome=''
+}
+
+# Starts entry $1: its fields, and its folder.
+start() {
+  fields "$1"
   mkdir -p "$dir"
 }
 
@@ -46,17 +51,18 @@ encode() {
   "source_$source" "$@"
 }
 
+# $1 seconds of the entry's source in H.264 + AAC, a keyframe every 2 s (what lets HLS cut it in 4 s or
+# 2 s segments); the other arguments are more output options.
+h264_aac() {
+  seconds=$1
+  shift
+  encode "$seconds" -c:v libx264 -preset veryfast -pix_fmt yuv420p -g 50 -c:a aac -b:a 96k -ac 2 "$@"
+}
+
 # The streams of $base (the first entry's MP4) copied, not encoded, into another container: the
-# arguments are the output options (-vn or -an first to keep one track). remux_ts and remux_fmp4 make
-# an HLS VOD in 4 s segments in "$dir".
+# arguments are the output options (-vn or -an first to keep one track).
 remux() {
   ffmpeg -loglevel error -y -i "$base" -c copy "$@"
-}
-remux_ts() {
-  hls_ts remux "$@"
-}
-remux_fmp4() {
-  hls_fmp4 remux "$@"
 }
 
 # Runs a command that ends in ffmpeg output options (`encode <seconds> ...`, `remux ...`) into an HLS
@@ -86,16 +92,14 @@ add() {
   }"
 }
 
-# Containers. The faststart MP4 is the one synthetic encode the remuxes copy; its keyframes every 2 s
-# let HLS cut it in 4 s segments.
+# Containers. The faststart MP4 is the one synthetic encode the remuxes copy.
 
 # Progressive MP4, index (moov) first: plays and seeks before the whole file is in. The page's "MP4,
 # local" button and its ?core=1 default play it.
 start mp4-faststart-h264-aac
 title='MP4, faststart, H.264 + AAC' url=$path/video.mp4 delivery=file container=mp4 codecs='h264 aac'
 axis=container feature='Progressive, 20 s, index first' source=synthetic firefox=ends chrome=ends
-encode 20 -c:v libx264 -preset veryfast -pix_fmt yuv420p -g 50 -c:a aac -b:a 96k -ac 2 -movflags +faststart \
-  "$dir/video.mp4"
+h264_aac 20 -movflags +faststart "$dir/video.mp4"
 add
 base=$dir/video.mp4
 
@@ -110,48 +114,47 @@ add
 start hls-ts-h264-aac
 title='HLS, MPEG-TS, H.264 + AAC' url=$path/index.m3u8 delivery=hls container=mpegts codecs='h264 aac'
 axis=container feature='VOD, 20 s in 4 s segments' source=synthetic firefox=ends chrome=ends
-remux_ts
+hls_ts remux
 add
 
 # HLS with fMP4 segments: an init section (EXT-X-MAP), then segments the browser takes as they are.
 start hls-fmp4-h264-aac
 title='HLS, fMP4, H.264 + AAC' url=$path/index.m3u8 delivery=hls container=fmp4 codecs='h264 aac'
 axis=container feature='VOD, 20 s in 4 s segments' source=synthetic firefox=ends chrome=ends
-remux_fmp4
+hls_fmp4 remux
 add
 
 # One track only, in each segment type.
 start hls-ts-audio
 title='HLS, MPEG-TS, audio only (AAC)' url=$path/index.m3u8 delivery=hls container=mpegts codecs=aac
 axis=container feature='VOD, 20 s, no video track' source=synthetic firefox=ends chrome=ends
-remux_ts -vn
+hls_ts remux -vn
 add
 
 start hls-fmp4-audio
 title='HLS, fMP4, audio only (AAC)' url=$path/index.m3u8 delivery=hls container=fmp4 codecs=aac
 axis=container feature='VOD, 20 s, no video track' source=synthetic firefox=ends chrome=ends
-remux_fmp4 -vn
+hls_fmp4 remux -vn
 add
 
 start hls-ts-video
 title='HLS, MPEG-TS, video only (H.264)' url=$path/index.m3u8 delivery=hls container=mpegts codecs=h264
 axis=container feature='VOD, 20 s, no audio track' source=synthetic firefox=ends chrome=ends
-remux_ts -an
+hls_ts remux -an
 add
 
 start hls-fmp4-video
 title='HLS, fMP4, video only (H.264)' url=$path/index.m3u8 delivery=hls container=fmp4 codecs=h264
 axis=container feature='VOD, 20 s, no audio track' source=synthetic firefox=ends chrome=ends
-remux_fmp4 -an
+hls_fmp4 remux -an
 add
 
 # Three qualities of fMP4 under a master playlist; 2 s keyframes keep their segments aligned.
 start hls-fmp4-qualities
 title='HLS, fMP4, 3 qualities, H.264 + AAC' url=$path/master.m3u8 delivery=hls container=fmp4 codecs='h264 aac'
 axis=container feature='VOD, 12 s, 180p, 270p and 360p' source=synthetic firefox=ends chrome=ends
-encode 12 -filter_complex '[0:v]split=3[a][b][c];[a]scale=-2:180[180];[b]scale=-2:270[270];[c]null[360]' \
-  -map '[180]' -map '[270]' -map '[360]' -map 1:a -map 1:a -map 1:a \
-  -c:v libx264 -preset veryfast -pix_fmt yuv420p -g 50 -b:v:0 200k -b:v:1 400k -b:v:2 800k -c:a aac -b:a 96k -ac 2 \
+h264_aac 12 -filter_complex '[0:v]split=3[a][b][c];[a]scale=-2:180[180];[b]scale=-2:270[270];[c]null[360]' \
+  -map '[180]' -map '[270]' -map '[360]' -map 1:a -map 1:a -map 1:a -b:v:0 200k -b:v:1 400k -b:v:2 800k \
   -f hls -hls_time 4 -hls_playlist_type vod -hls_segment_type fmp4 -hls_fmp4_init_filename init.mp4 \
   -hls_segment_filename "$dir/%v/%03d.m4s" -master_pl_name master.m3u8 \
   -var_stream_map 'v:0,a:0,name:180p v:1,a:1,name:270p v:2,a:2,name:360p' "$dir/%v/index.m3u8"
@@ -164,9 +167,7 @@ start hls-fmp4-clip
 title='HLS, fMP4, Sintel with B-frames, no gaps plugin' url=$path/index.m3u8 delivery=hls container=fmp4
 codecs='h264 aac' axis=container feature='VOD, 12 s, B-frames: the buffer starts 83 ms in' source=clip plugins=hls
 firefox=ends chrome=ends
-encode 12 -c:v libx264 -preset veryfast -bf 3 -g 48 -c:a aac -b:a 96k -ac 2 \
-  -f hls -hls_time 4 -hls_playlist_type vod -hls_segment_type fmp4 -hls_fmp4_init_filename init.mp4 \
-  -hls_segment_filename "$dir/%03d.m4s" "$dir/index.m3u8"
+hls_fmp4 encode 12 -c:v libx264 -preset veryfast -bf 3 -g 48 -c:a aac -b:a 96k -ac 2
 add
 
 # The same media and fields (no `start`), with the gaps plugin.
@@ -174,12 +175,14 @@ id=hls-fmp4-clip-gaps title='HLS, fMP4, Sintel with B-frames, gaps plugin' plugi
 feature='VOD, 12 s, B-frames: the buffer starts 83 ms in, jumped'
 add
 
-# Progressive WebM, VP9 + Opus: both browsers play it themselves.
+# Progressive WebM, VP9 + Opus: both browsers play it themselves. A keyframe every 2 s, so the VP9 HLS
+# entry below can copy the video.
 start webm-vp9-opus
 title='WebM, VP9 + Opus' url=$path/video.webm delivery=file container=webm codecs='vp9 opus'
 axis=container feature='Progressive, 10 s' source=synthetic firefox=ends chrome=ends
-encode 10 -c:v libvpx-vp9 -deadline realtime -cpu-used 8 -b:v 500k -c:a libopus -b:a 96k "$dir/video.webm"
+encode 10 -c:v libvpx-vp9 -deadline realtime -cpu-used 8 -b:v 500k -g 50 -c:a libopus -b:a 96k "$dir/video.webm"
 add
+webm=$dir/video.webm
 
 # Codecs our HLS engine does not play (Firefox's case: Chrome plays HLS itself), each to fail naming
 # the codec. Outcomes as seen in headless Firefox 130 and Chrome 156. No HE-AAC: ffmpeg's aac encoder
@@ -260,7 +263,7 @@ start hls-fmp4-vp9
 title='HLS, fMP4, VP9 + AAC' url=$path/index.m3u8 delivery=hls container=fmp4 codecs='vp9 aac'
 axis=codec feature='VP9 video' source=synthetic
 firefox='fails: init section: vp09 is a codec this player cannot play' chrome=ends
-hls_fmp4 encode 10 -c:v libvpx-vp9 -deadline realtime -cpu-used 8 -b:v 500k -g 50 -c:a aac -b:a 96k -ac 2
+hls_fmp4 ffmpeg -loglevel error -y -i "$webm" -c:v copy -c:a aac -b:a 96k -ac 2
 add
 
 start hls-fmp4-av1
@@ -272,15 +275,14 @@ add
 
 # Faults. Container entries' playlists through the server's fault route (crates/server/src/fault.rs), which
 # lists their URIs through it too, so the fault reaches the segments. The url is a route, not a file, and
-# there is no media of their own: `fault_start` is `start` without the folder. The route counts requests
+# there is no media of their own, so no folder. The route counts requests
 # from the server's start, all paths of a spec together: nth=3 is the third, whichever file that is (the
 # segment after the first in Firefox; Chrome fetches the first segment twice), and shows once until the
 # server restarts. Chrome's player gives up on any failed download, and the page shows nothing.
 # Starts fault entry $1: the faults $2 over the playlist $3 (from catalog/) of a synthetic H.264 + AAC
 # container entry in container $4.
 fault_start() {
-  start "$1"
-  rmdir "$dir"
+  fields "$1"
   url=fault/$2/catalog/$3 container=$4 delivery=hls codecs='h264 aac' axis=fault source=synthetic
 }
 TS=hls-ts-h264-aac/index.m3u8 QUALITIES=hls-fmp4-qualities/master.m3u8
@@ -328,13 +330,12 @@ add
 # playlist, or the timestamps of the segments after a point. The comment above each entry says what it
 # should do once the engine handles it.
 
-# $1 seconds of the entry's source in H.264 + AAC as an HLS VOD in 2 s segments (a keyframe every 2 s).
-# The other arguments are more output options, the playlist last.
+# $1 seconds of H.264 + AAC as an HLS VOD in 2 s segments; the other arguments are more output options,
+# the playlist last.
 hls_vod() {
   seconds=$1
   shift
-  encode "$seconds" -c:v libx264 -preset veryfast -pix_fmt yuv420p -g 50 -c:a aac -b:a 96k -ac 2 \
-    -f hls -hls_time 2 -hls_playlist_type vod "$@"
+  h264_aac "$seconds" -f hls -hls_time 2 -hls_playlist_type vod "$@"
 }
 
 # A stream of $2 seconds encoded on its own in "$dir/$1": 000.ts on, and index.m3u8. Its timestamps
@@ -398,9 +399,9 @@ add
 # segments. With the streams above: live.m3u8 starts as before.m3u8, the first as a live window of 6 s
 # (no ENDLIST, so the player reloads it and waits at its end); after.m3u8 is the window after the
 # restart: MEDIA-SEQUENCE back to 0, the grey stream's segments under the sequence numbers already
-# played, then ENDLIST. Copied over live.m3u8 while it plays, the next reload sees the restart. Now our engine skips the new segments, as their numbers are
-# loaded already, and ends at 0:06; so does Chrome's own player. Once the engine sees the restart, it plays
-# the grey 6 s after the first and ends at 0:12.
+# played, then ENDLIST. Copied over live.m3u8 while it plays, the next reload sees the restart. Now our
+# engine skips the new segments, as their numbers are loaded already, and ends at 0:06; so does Chrome's
+# own player. Once the engine sees the restart, it plays the grey 6 s after the first and ends at 0:12.
 start hls-ts-encoder-restart
 title='HLS, MPEG-TS, live, encoder restart (copy a file by hand)' url=$path/live.m3u8 delivery=hls
 container=mpegts codecs='h264 aac' axis=feature source=synthetic

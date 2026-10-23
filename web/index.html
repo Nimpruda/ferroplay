@@ -100,11 +100,13 @@
     if (plugins) {
       chosen = plugins.filter(name => name in PLUGINS);
       tick();
+      remember();
+      build(0, true);
+    } else {
+      remember();
+      forget();
+      p.play(source(link));
     }
-    remember();
-    forget();
-    if (plugins) build(0, true);
-    else p.play(source(link));
   }
   form.addEventListener('submit', e => {
     e.preventDefault();
