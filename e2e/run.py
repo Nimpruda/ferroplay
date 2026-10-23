@@ -333,6 +333,23 @@ def fmp4_start_gap(url):
                 b.close()
 
 
+def small_hole(url):
+    """The catalog's one-frame hole (0.04 s at 6 s, from ./make-catalog.sh): Chrome stops 0.07 s short of the range
+    before it, and the gaps plugin jumps the hole all the same, so it plays to the end everywhere."""
+    path = 'catalog/hls-ts-hole-small/index.m3u8'
+    if not os.path.exists(os.path.join(ROOT, 'web', path)):
+        print(f'skipped: {path} missing, run ./make-catalog.sh')
+        return
+    for name, browser in BROWSERS:
+        b = browser()
+        try:
+            open_page(b, f'{url}?play={path}&plugins=gaps,hls', play=False)
+            ended, s = until(b, f"{V}.ended", 30), state(b)
+            check(f'{name}: a VOD plays over a one-frame hole, to the end', ended and not s['error'], s)
+        finally:
+            b.close()
+
+
 def slow_network(url):
     b = Chrome(init_script=HIDE_NATIVE_HLS)
     b.throttle(0.6)
@@ -369,6 +386,7 @@ def main():
         media_error(url)
         skipped_segment(url)
         fmp4_start_gap(url)
+        small_hole(url)
         links(url, other)
         core_build(url)
         slow_network(url)

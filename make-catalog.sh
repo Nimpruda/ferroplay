@@ -412,13 +412,13 @@ firefox='fails: ends at 0:06 once after.m3u8 is in, the new segments never fetch
 cp "$dir/before.m3u8" "$dir/live.m3u8"
 add
 
-# A hole of one frame (0.04 s) in the timestamps. Firefox plays over it, gaps plugin or not. Chrome's own
-# player waits at it; so does our engine in Chrome, gaps plugin and all: Chrome stops 0.07 s before the
-# end of the range, and the plugin measures the hole from there (over 0.1 s) rather than between ranges.
+# A hole of one frame (0.04 s) in the timestamps. Firefox plays over it, gaps plugin or not. Chrome waits at
+# it, 0.07 s before the end of the range, with its own player or our engine; the gaps plugin, which measures
+# the hole between ranges and runs on either, jumps it.
 start hls-ts-hole-small
 title='HLS, MPEG-TS, a one-frame hole, gaps plugin' url=$path/index.m3u8 delivery=hls container=mpegts
 codecs='h264 aac' axis=feature feature='VOD, 12 s, no media from 6 to 6.04 s' source=synthetic plugins='hls gaps'
-firefox=ends chrome='fails: waits at 0:06, no message'
+firefox=ends chrome=ends
 hole 0.04
 add
 

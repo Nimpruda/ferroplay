@@ -290,6 +290,8 @@ fn gaps_never_skip_media_buffered_under_the_playhead() {
 fn after_playback_has_moved_gaps_jump_only_small_holes() {
     assert_eq!(buffered(&mut waiting_at(5.0), &[(0.0, 4.98), (5.05, 10.0)]), [Cmd::Seek(5.05 + 0.1)], "in no range");
     assert_eq!(buffered(&mut waiting_at(4.95), &[(0.0, 5.0), (5.04, 10.0)]), [Cmd::Seek(5.04 + 0.1)], "at the end of one");
+    let short = buffered(&mut waiting_at(5.93), &[(0.0, 6.0), (6.04, 12.0)]);
+    assert_eq!(short, [Cmd::Seek(6.04 + 0.1)], "stopped 0.07 s short of a range, a 0.04 s hole");
     assert_eq!(buffered(&mut waiting_at(5.0), &[(0.0, 5.0), (5.5, 10.0)]), [], "the source fills larger holes");
 }
 

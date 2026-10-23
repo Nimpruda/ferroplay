@@ -86,9 +86,11 @@ impl Plugin for Gaps {
         let t = state.time;
         let Some((next, end)) = state.buffered.next_after(t) else { return };
         // Nothing, or next to nothing, left to play here: buffered media under the playhead is never skipped.
-        let starved = state.buffered.end_at(t).is_none_or(|end| end - t <= self.hole);
+        let here = state.buffered.end_at(t);
+        let starved = here.is_none_or(|end| end - t <= self.hole);
         let most = if t > state.seeked { self.hole } else { self.start };
-        if !starved || next - t > most {
+        // The hole is between ranges: the element can stop a little short of the end of its range (Chrome, 0.07 s).
+        if !starved || next - here.unwrap_or(t) > most {
             return;
         }
         // A little into the range (hls.js's skipBufferHolePadding), so the element is clear of the gap. The seek
