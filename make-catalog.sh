@@ -193,7 +193,7 @@ webm=$dir/video.webm
 start mp4-hevc-aac
 title='MP4, faststart, HEVC + AAC' url=$path/video.mp4 delivery=file container=mp4 codecs='hevc aac'
 axis=codec feature='Progressive HEVC (hvc1): the browser decodes it or not' source=synthetic
-firefox='fails: NS_ERROR_DOM_MEDIA_METADATA_ERR, nothing on the player'
+firefox='fails: NS_ERROR_DOM_MEDIA_METADATA_ERR, shown on the player'
 chrome='ends, sound only: no picture (no HEVC decoder) and no error'
 encode 10 -c:v libx265 -preset ultrafast -x265-params log-level=error -tag:v hvc1 -pix_fmt yuv420p -g 50 \
   -c:a aac -b:a 96k -ac 2 -movflags +faststart "$dir/video.mp4"
@@ -206,7 +206,7 @@ start hls-fmp4-hevc
 title='HLS, fMP4, HEVC + AAC' url=$path/index.m3u8 delivery=hls container=fmp4 codecs='hevc aac'
 axis=codec feature='HEVC video (hvc1)' source=synthetic
 firefox='fails: init section: hvc1 is a codec this player cannot play'
-chrome="fails: DECODER_ERROR_NOT_SUPPORTED (Chrome's HLS, no HEVC decoder), nothing on the player"
+chrome="fails: DECODER_ERROR_NOT_SUPPORTED (Chrome's HLS, no HEVC decoder), shown on the player"
 hls_fmp4 ffmpeg -loglevel error -y -i "$hevc" -c copy
 add
 
@@ -240,7 +240,7 @@ start hls-mp3-packed
 title='HLS, packed audio, MP3' url=$path/index.m3u8 delivery=hls container=mp3 codecs=mp3
 axis=codec feature='Audio-only playlist of .mp3 segments' source=synthetic
 firefox='each segment skipped as not MPEG-TS; sits at the end, not ended, nothing on the player'
-chrome="fails: CHUNK_DEMUXER_ERROR_APPEND_FAILED (Chrome's HLS), nothing on the player"
+chrome="fails: CHUNK_DEMUXER_ERROR_APPEND_FAILED (Chrome's HLS), shown on the player"
 encode 10 -vn -c:a libmp3lame -b:a 128k -ac 2 -f segment -segment_time 4 -segment_format mp3 \
   -segment_list "$dir/index.m3u8" -segment_list_type m3u8 "$dir/%03d.mp3"
 add

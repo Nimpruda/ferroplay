@@ -282,6 +282,19 @@ def unusable(url):
             b.close()
 
 
+def media_error(url):
+    """A file the browser cannot decode (the catalog's HEVC MP4, in Firefox): its media error is shown on the player."""
+    b = Firefox()
+    try:
+        open_page(b, f'{url}?play=catalog/mp4-hevc-aac/video.mp4')
+        until(b, "document.querySelector('.vp').dataset.error", 15)
+        error = b.js("document.querySelector('.vp').dataset.error")
+        check('firefox: a file it cannot decode shows its media error on the player',
+              error and 'NS_ERROR_DOM_MEDIA_METADATA_ERR' in error, error)
+    finally:
+        b.close()
+
+
 def skipped_segment(url):
     """One segment that is not MPEG-TS (the master playlist, here) among the demo's 240p ones: it is warned about
     and skipped, and the playhead, which would wait at its hole forever, is moved past it and plays to the end."""
@@ -353,6 +366,7 @@ def main():
         playback('chrome (built-in HLS)', Chrome(), url, engine=False)
         live(url)
         unusable(url)
+        media_error(url)
         skipped_segment(url)
         fmp4_start_gap(url)
         links(url, other)

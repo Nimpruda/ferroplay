@@ -11,6 +11,8 @@ const PLUGINS = ['keyboard', 'loop', 'startAt', 'abLoop', 'hls', 'gaps'];
 // duration (seconds) or nothing; it returns the value, or nothing to keep the default. Names not listed here
 // throw when registered: a typo must not silently keep the default.
 const KNOBS = ['ahead', 'behind', 'holdback', 'safety', 'retries', 'liveRetries', 'initRetries'];
+// MediaError codes, by number, for a browser that gives no message.
+const MEDIA_ERRORS = [, 'MEDIA_ERR_ABORTED', 'MEDIA_ERR_NETWORK', 'MEDIA_ERR_DECODE', 'MEDIA_ERR_SRC_NOT_SUPPORTED'];
 const ARROWS = { ArrowLeft: '←', ArrowUp: '↑', ArrowRight: '→', ArrowDown: '↓' };
 
 const icon = (cls, d) => `<svg class="${cls}" viewBox="0 0 24 24"><path d="${d}"/></svg>`;
@@ -103,6 +105,15 @@ export function player(video, plugins = {}) {
   root.insertAdjacentHTML('beforeend', `<div class="vp-bar">${BAR}</div>`);
   const [seek, time, vol] = ['.vp-seek', '.vp-time', '.vp-vol'].map(s => root.querySelector(s));
 
+  // Playback has stopped: say why on the player, and to the page as an `error` event (detail: the message).
+  // The first reason for a source stands: a later one is only its echo.
+  const fail = message => {
+    console.error(message);
+    if (root.dataset.error) return;
+    root.dataset.error = message;
+    root.dispatchEvent(new CustomEvent('error', { detail: message }));
+  };
+
   // Host commands by name. JS plugins add their own with `handle`.
   const handlers = {
     play: () => settle(video.play()),
@@ -124,13 +135,7 @@ export function player(video, plugins = {}) {
       ['emptied', 'durationchange', 'timeupdate'].forEach(type => media[type]());
     },
     warn: (_, bytes) => console.warn(utf8.decode(bytes)),
-    // Playback has stopped: say why on the player, and to the page as an `error` event (detail: the message).
-    fail: (_, bytes) => {
-      const message = utf8.decode(bytes);
-      console.error(message);
-      root.dataset.error = message;
-      root.dispatchEvent(new CustomEvent('error', { detail: message }));
-    },
+    fail: (_, bytes) => fail(utf8.decode(bytes)),
   };
   const run = (code, value, bytes) => {
     const handler = handlers[CMDS[code]];
@@ -226,6 +231,12 @@ export function player(video, plugins = {}) {
     waiting: () => send('waiting'),
     volumechange: () => { send('volumeChanged', video.volume); send('muted', video.muted); },
     ratechange: () => send('rateChanged', video.playbackRate),
+    // The browser itself failed (a file it cannot decode, its own HLS): shown like the core's `fail`. Gone by
+    // now if the source has changed since.
+    error: () => {
+      const e = video.error;
+      if (e) fail(e.message || MEDIA_ERRORS[e.code] || `MediaError ${e.code}`);
+    },
   };
   for (const [type, fn] of Object.entries(media)) video.addEventListener(type, fn);
   const onFullscreen = () => send('fullscreen', document.fullscreenElement === root);
