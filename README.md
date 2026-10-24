@@ -25,6 +25,7 @@ prek install                               # once: the git hooks in prek.toml (a
 cargo run -p server   # http://127.0.0.1:8080
 cargo test            # every crate's tests, run natively
 python3 e2e/run.py    # real HLS and links through our server, in headless Firefox and Chrome
+python3 e2e/run.py --quick   # the pre-merge subset: server, Chrome engine playback, unusable, fMP4, media error
 ```
 
 The `justfile` wraps these (`just` lists the recipes). With only Docker installed:
@@ -199,7 +200,7 @@ window with no `ENDLIST`, and stopping it ends the playlist, so it can also test
 
 `./make-hls.sh` makes the demo stream in `web/hls/`: the Sintel trailer, read straight from
 blender.org, as HLS with MPEG-TS segments in 240p, 360p and 480p. `e2e/run.py` (Python stdlib
-only) then checks, with our server:
+only) then checks, with our server, each scenario in its own thread (`--quick` runs a pre-merge subset):
 
 - every segment converts and ffmpeg decodes it,
 - HLS content types, and the proxy rewriting playlists,

@@ -42,6 +42,11 @@ lint:
 e2e: build
     python3 e2e/run.py
 
+# The pre-merge subset of the e2e tests (about a minute)
+[group('native')]
+e2e-quick: build
+    python3 e2e/run.py --quick
+
 # Remake the demo HLS stream in web/hls (downloads the Sintel trailer)
 [group('native')]
 hls:

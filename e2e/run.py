@@ -2,8 +2,12 @@
 """End-to-end test: real HLS (MPEG-TS) and links served by our server, in headless Firefox and
 Chrome. Python stdlib only.
 
-    ./build.sh && python3 e2e/run.py
+    ./build.sh && python3 e2e/run.py [--quick]
+
+Each scenario runs in its own thread against the one server; --quick runs the pre-merge subset.
 """
+import argparse
+import concurrent.futures
 import contextlib
 import glob
 import os
@@ -11,13 +15,31 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
+import traceback
 import urllib.request
 from pathlib import Path
 from urllib.parse import quote
 
-from browser import Chrome, Firefox, free_port
+import browser as drivers
+from browser import free_port
 
+# Scenarios run in parallel threads: each records its own PASS/FAIL lines, printed together once it is over.
+WORKERS = 8  # measured: see docs/learnings/testing.md
+SCENARIO = threading.local()
+
+
+def launched(cls):
+    """`cls`, with every browser it starts closed at the end of its scenario, also when the scenario fails midway."""
+    def start(*args, **kwargs):
+        b = cls(*args, **kwargs)
+        SCENARIO.browsers.append(b)
+        return b
+    return start
+
+
+Chrome, Firefox = launched(drivers.Chrome), launched(drivers.Firefox)
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RECORD_LIVE_RANGES = """(() => { const set = MediaSource.prototype.setLiveSeekableRange; window.liveRanges = [];
 MediaSource.prototype.setLiveSeekableRange = function (start, end) { window.liveRanges.push([start, end]); return set.call(this, start, end); }; })();"""
@@ -27,21 +49,19 @@ MP4 = 'https://download.blender.org/durian/trailer/sintel_trailer-480p.mp4'
 V = "document.getElementById('main')"
 # Both browsers on the Rust engine: Chrome's own HLS hidden.
 BROWSERS = (('firefox', Firefox), ('chrome', lambda: Chrome(init_script=HIDE_NATIVE_HLS)))
-failures = []
 
 
 def check(name, ok, detail=''):
-    print(f"{'PASS' if ok else 'FAIL'}  {name}  {detail}")
-    if not ok:
-        failures.append(name)
+    SCENARIO.lines.append(f"{'PASS' if ok else 'FAIL'}  {name}  {detail}")
 
 
 def wait_for(condition, seconds, step=0.25):
-    for _ in range(int(seconds / step)):
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
         if condition():
             return True
         time.sleep(step)
-    return False
+    return bool(condition())
 
 
 def until(b, condition, seconds):
@@ -189,7 +209,6 @@ def live(url):
     shutil.rmtree(live_dir, ignore_errors=True)
     stream = subprocess.Popen([os.path.join(ROOT, 'make-live.sh')], cwd=ROOT, env={**os.environ, 'OUT': 'web/hls/live-e2e'},
                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    browsers = []
     try:
         playlist = Path(live_dir, 'live.m3u8')
         # A full window (6 segments of 4 s), so the start is a real hold-back (3 × 4 s from the end), not 0.
@@ -198,8 +217,7 @@ def live(url):
         if not ready:
             return
 
-        b = Firefox()
-        browsers.append(b)
+        b = Firefox()  # closed with the scenario, like every browser here
         open_page(b, page, play=False)
         # Errors after the page loads: uncaught ones, and rejected promises (a failed core call lands here).
         b.js("(() => { window.liveErrors = []; window.addEventListener('error', e => liveErrors.push(String(e.error ?? e.message)));"
@@ -209,7 +227,8 @@ def live(url):
         check('live: starts at the hold-back, about 12 s from the live edge', started and 8 <= edge - start['t'] <= 16,
               f'{start}, seekable ends at {edge:.1f}')
 
-        time.sleep(35)
+        # What the check below reads: past 30 s of play and 3 playlist reloads; bounded at 60 s (about 20 s are needed).
+        wait_for(lambda: state(b)['t'] > 30 and len(downloads(b, 'hls/live-e2e/live.m3u8')) >= 3, 60)
         s = state(b)
         s['ended'] = b.js(f"{V}.ended")
         reloads = len(downloads(b, 'hls/live-e2e/live.m3u8'))
@@ -224,10 +243,10 @@ def live(url):
 
         # The range reaches the MediaSource: the calls are recorded in Chrome (Rust engine), while the stream is live.
         c = Chrome(init_script=HIDE_NATIVE_HLS + '\n' + RECORD_LIVE_RANGES)
-        browsers.append(c)
         open_page(c, page, play=False)
         until(c, f"{V}.currentTime > 2", 20)
-        time.sleep(12)
+        # The recorded range moves once a new segment lands (every 4 s).
+        until(c, "window.liveRanges.length && window.liveRanges.at(-1)[1] > window.liveRanges[0][1]", 20)
         ranges = c.js('window.liveRanges')
         ok = bool(ranges) and all(0 <= start <= end < 1e9 for start, end in ranges) and ranges[-1][1] > ranges[0][1]
         check('live: the window reaches the MediaSource, and it moves', ok, f'{len(ranges)} calls, first {ranges[:1]}, last {ranges[-1:]}')
@@ -238,8 +257,6 @@ def live(url):
         ended = until(b, f"{V}.ended", 60)
         check('live: plays to the end once the stream has ended', ended and not state(b)['error'], state(b))
     finally:
-        for browser in browsers:
-            browser.close()
         if stream.poll() is None:
             stream.send_signal(signal.SIGINT)
             try:
@@ -350,44 +367,78 @@ def slow_network(url):
     b = Chrome(init_script=HIDE_NATIVE_HLS)
     b.throttle(0.6)
     open_page(b, url + '?plugins=keyboard,gaps,hls')
-    time.sleep(20)
+    wait_for(lambda: state(b)['t'] > 8, 40)  # the time the check reads (rounded)
     fetched, s = qualities(b), state(b)
     check('chrome at 0.6 Mbit/s: stays on 240p and keeps playing', set(fetched) == {'240p'} and s['t'] > 8 and not s['paused'],
           f'qualities fetched: {fetched}, {s}')
     b.close()
 
 
+def reachable(url):
+    try:
+        urllib.request.urlopen(url)
+        return True
+    except OSError:
+        return False
+
+
+def run(name, scenario):
+    """Runs one scenario in this thread and returns its lines; an exception is a failure of that scenario."""
+    SCENARIO.lines, SCENARIO.browsers = [], []
+    try:
+        scenario()
+    except Exception:  # noqa: BLE001 - whatever it is, it is this scenario's failure
+        check(f'{name}: runs without an exception', False, traceback.format_exc())
+    finally:
+        for b in SCENARIO.browsers:  # closing twice is harmless
+            b.close()
+    return SCENARIO.lines
+
+
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--quick', action='store_true',
+                        help='the pre-merge subset: server checks, Chrome engine playback, unusable, fMP4 start gap, media error')
+    parser.add_argument('--workers', type=int, default=WORKERS, help=f'scenarios run at once (default {WORKERS})')
+    args = parser.parse_args()
     for needed in ('web/player.wasm', 'web/player-core.wasm', 'web/hls/master.m3u8'):
         if not os.path.exists(os.path.join(ROOT, needed)):
             sys.exit(f'missing {needed}: run ./build.sh (with ffmpeg installed) first')
     if not os.path.exists(os.path.join(ROOT, 'web/catalog/catalog.json')):
         sys.exit('missing web/catalog: run ./make-catalog.sh first')
-    converter()
 
     port = free_port()
     server = subprocess.Popen(['cargo', 'run', '-q', '-p', 'server'], cwd=ROOT, env={**os.environ, 'PORT': str(port)})
     url, other = f'http://127.0.0.1:{port}/', f'http://localhost:{port}/'  # two origins, one server
+    quick = {
+        'server': lambda: server_checks(url, other),
+        'chrome (Rust engine)': lambda: playback('chrome (Rust engine)', Chrome(init_script=HIDE_NATIVE_HLS), url, engine=True),
+        'unusable': lambda: unusable(url),
+        'fmp4 start gap': lambda: fmp4_start_gap(url),
+        'media error': lambda: media_error(url),
+    }
+    scenarios = quick if args.quick else {
+        'live': lambda: live(url),  # the longest one (about 90 s): first in line
+        **quick,
+        'converter': converter,
+        'firefox (Rust engine)': lambda: playback('firefox (Rust engine)', Firefox(), url, engine=True),
+        'chrome (built-in HLS)': lambda: playback('chrome (built-in HLS)', Chrome(), url, engine=False),
+        'skipped segment': lambda: skipped_segment(url),
+        'small hole': lambda: small_hole(url),
+        'links': lambda: links(url, other),
+        'core build': lambda: core_build(url),
+        'slow network': lambda: slow_network(url),
+    }
     try:
-        for _ in range(240):
-            try:
-                urllib.request.urlopen(url)
-                break
-            except OSError:
-                time.sleep(0.5)
-        server_checks(url, other)
-        playback('firefox (Rust engine)', Firefox(), url, engine=True)
-        playback('chrome (Rust engine)', Chrome(init_script=HIDE_NATIVE_HLS), url, engine=True)
-        playback('chrome (built-in HLS)', Chrome(), url, engine=False)
-        live(url)
-        unusable(url)
-        media_error(url)
-        skipped_segment(url)
-        fmp4_start_gap(url)
-        small_hole(url)
-        links(url, other)
-        core_build(url)
-        slow_network(url)
+        if not wait_for(lambda: reachable(url), 120, 0.5):
+            sys.exit('the server did not start')
+        failures = []
+        with concurrent.futures.ThreadPoolExecutor(args.workers) as pool:
+            results = {name: pool.submit(run, name, scenario) for name, scenario in scenarios.items()}
+            for name, result in results.items():  # in order, each scenario's lines together
+                lines = result.result()
+                failures += [line for line in lines if line.startswith('FAIL')]
+                print(f'\n[{name}]', *lines, sep='\n', flush=True)
     finally:
         server.kill()
 

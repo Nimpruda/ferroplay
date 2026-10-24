@@ -9,14 +9,33 @@ import socket
 import struct
 import subprocess
 import tempfile
+import threading
 import time
 import urllib.request
 
+_given = set()
+_given_lock = threading.Lock()
+
 
 def free_port():
-    with socket.socket() as s:
-        s.bind(('127.0.0.1', 0))
-        return s.getsockname()[1]
+    """A free port, never one given before in this process: browsers start in parallel, and the port is free only
+    until the browser binds it."""
+    with _given_lock:
+        while True:
+            with socket.socket() as s:
+                s.bind(('127.0.0.1', 0))
+                port = s.getsockname()[1]
+            if port not in _given:
+                _given.add(port)
+                return port
+
+
+def recv(sock):
+    """The next bytes from the browser; a closed connection (the browser is gone) raises instead of spinning forever."""
+    data = sock.recv(1 << 16)
+    if not data:
+        raise ConnectionError('the browser closed its connection')
+    return data
 
 
 KEY_CODES = {'ArrowRight': 39, 'ArrowLeft': 37, 'ArrowUp': 38, 'ArrowDown': 40, ' ': 32}  # Chrome's windowsVirtualKeyCode
@@ -38,12 +57,12 @@ class Chrome:
             except OSError:
                 time.sleep(0.2)
         path = next(p for p in pages if p['type'] == 'page')['webSocketDebuggerUrl'].split(str(port), 1)[1]
-        self.sock = socket.create_connection(('127.0.0.1', port))
+        self.sock = socket.create_connection(('127.0.0.1', port), timeout=120)
         key = base64.b64encode(os.urandom(16)).decode()
         self.sock.sendall(f'GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n'
                           f'Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n'.encode())
         while b'\r\n\r\n' not in self.buf:
-            self.buf += self.sock.recv(4096)
+            self.buf += recv(self.sock)
         self.buf = self.buf.split(b'\r\n\r\n', 1)[1]
         self.cdp('Runtime.enable')
         self.cdp('Network.enable')
@@ -53,7 +72,7 @@ class Chrome:
 
     def _read(self, n):
         while len(self.buf) < n:
-            self.buf += self.sock.recv(1 << 16)
+            self.buf += recv(self.sock)
         out, self.buf = self.buf[:n], self.buf[n:]
         return out
 
@@ -117,7 +136,7 @@ class Firefox:
                                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         for _ in range(100):
             try:
-                self.sock = socket.create_connection(('127.0.0.1', port))
+                self.sock = socket.create_connection(('127.0.0.1', port), timeout=120)
                 break
             except OSError:
                 time.sleep(0.2)
@@ -126,10 +145,10 @@ class Firefox:
 
     def _receive(self):
         while b':' not in self.buf:
-            self.buf += self.sock.recv(1 << 16)
+            self.buf += recv(self.sock)
         n, rest = self.buf.split(b':', 1)
         while len(rest) < int(n):
-            rest += self.sock.recv(1 << 16)
+            rest += recv(self.sock)
         self.buf = rest[int(n):]
         return json.loads(rest[:int(n)])
 
