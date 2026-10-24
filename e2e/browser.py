@@ -1,5 +1,6 @@
 """Tiny stdlib drivers for headless Chrome (DevTools protocol) and Firefox (Marionette).
-Both offer: open(url), js(expr) -> value (promises awaited), key(k), close()."""
+Both offer: open(url), js(expr) -> value (promises awaited), key(k), close(); each is a context manager that closes.
+Each browser picks its own debugging port and writes it to its profile, so several can start at once."""
 import base64
 import contextlib
 import json
@@ -9,25 +10,32 @@ import socket
 import struct
 import subprocess
 import tempfile
-import threading
 import time
 import urllib.request
 
-_given = set()
-_given_lock = threading.Lock()
-
 
 def free_port():
-    """A free port, never one given before in this process: browsers start in parallel, and the port is free only
-    until the browser binds it."""
-    with _given_lock:
-        while True:
-            with socket.socket() as s:
-                s.bind(('127.0.0.1', 0))
-                port = s.getsockname()[1]
-            if port not in _given:
-                _given.add(port)
-                return port
+    with socket.socket() as s:
+        s.bind(('127.0.0.1', 0))
+        return s.getsockname()[1]
+
+
+def wait_for(condition, seconds, step=0.25):
+    """True once `condition()` holds, polling every `step`; false if it still does not after `seconds`."""
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if condition():
+            return True
+        time.sleep(step)
+    return bool(condition())
+
+
+def active_port(path):
+    """The port a browser wrote to `path` once it listens; raises if it did not within 30 s (it died at start)."""
+    if not wait_for(lambda: os.path.exists(path) and os.path.getsize(path), 30, 0.1):
+        raise RuntimeError(f'the browser did not start: no {os.path.basename(path)}')
+    with open(path) as f:
+        return int(f.readline())
 
 
 def recv(sock):
@@ -38,24 +46,28 @@ def recv(sock):
     return data
 
 
+class Browser:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+
+
 KEY_CODES = {'ArrowRight': 39, 'ArrowLeft': 37, 'ArrowUp': 38, 'ArrowDown': 40, ' ': 32}  # Chrome's windowsVirtualKeyCode
 
 
-class Chrome:
+class Chrome(Browser):
     def __init__(self, init_script=None):
-        port, self.dir, self.id, self.logs, self.buf = free_port(), tempfile.mkdtemp(), 0, [], b''
+        self.dir, self.id, self.logs, self.buf = tempfile.mkdtemp(), 0, [], b''
         # Chrome won't run as root (containers) with its sandbox on.
         sandbox = ['--no-sandbox'] if os.geteuid() == 0 else []
         self.proc = subprocess.Popen([os.environ.get('CHROME', 'google-chrome'), *sandbox, '--headless=new',
-            f'--remote-debugging-port={port}', '--autoplay-policy=no-user-gesture-required',
+            '--remote-debugging-port=0', '--autoplay-policy=no-user-gesture-required',
             f'--user-data-dir={self.dir}', 'about:blank'],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        for _ in range(100):
-            try:
-                pages = json.load(urllib.request.urlopen(f'http://127.0.0.1:{port}/json'))
-                break
-            except OSError:
-                time.sleep(0.2)
+        port = active_port(f'{self.dir}/DevToolsActivePort')
+        pages = json.load(urllib.request.urlopen(f'http://127.0.0.1:{port}/json'))
         path = next(p for p in pages if p['type'] == 'page')['webSocketDebuggerUrl'].split(str(port), 1)[1]
         self.sock = socket.create_connection(('127.0.0.1', port), timeout=120)
         key = base64.b64encode(os.urandom(16)).decode()
@@ -126,20 +138,16 @@ class Chrome:
         shutil.rmtree(self.dir, ignore_errors=True)
 
 
-class Firefox:
+class Firefox(Browser):
     def __init__(self):
-        port, self.dir, self.id, self.logs, self.buf = free_port(), tempfile.mkdtemp(), 0, [], b''
+        self.dir, self.id, self.logs, self.buf = tempfile.mkdtemp(), 0, [], b''
         with open(f'{self.dir}/user.js', 'w') as prefs:
-            prefs.write(f'user_pref("marionette.port", {port});\nuser_pref("media.autoplay.default", 0);\n')
+            prefs.write('user_pref("marionette.port", 0);\nuser_pref("media.autoplay.default", 0);\n')
         firefox = os.environ.get('FIREFOX') or ('/usr/lib/firefox/firefox' if os.path.exists('/usr/lib/firefox/firefox') else 'firefox')
         self.proc = subprocess.Popen([firefox, '--headless', '--marionette', '--no-remote', '--profile', self.dir],
                                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        for _ in range(100):
-            try:
-                self.sock = socket.create_connection(('127.0.0.1', port), timeout=120)
-                break
-            except OSError:
-                time.sleep(0.2)
+        port = active_port(f'{self.dir}/MarionetteActivePort')
+        self.sock = socket.create_connection(('127.0.0.1', port), timeout=120)
         self._receive()  # greeting
         self.call('WebDriver:NewSession', capabilities={})
 
@@ -171,7 +179,7 @@ class Firefox:
         return self.call('WebDriver:ExecuteAsyncScript', script=script, args=[], scriptTimeout=60000)['value']
 
     def key(self, k):
-        k = {'ArrowRight': '', 'ArrowLeft': '', 'ArrowUp': '', 'ArrowDown': ''}.get(k, k)
+        k = {'ArrowRight': '', 'ArrowLeft': '', 'ArrowUp': '', 'ArrowDown': ''}.get(k, k)
         self.call('WebDriver:PerformActions', actions=[{'type': 'key', 'id': 'kb', 'actions': [
             {'type': 'keyDown', 'value': k}, {'type': 'keyUp', 'value': k}]}])
 
